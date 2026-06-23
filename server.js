@@ -293,15 +293,22 @@ app.post('/api/odoo/create-purchase-order', async (req, res) => {
     }
 });
 
-// Serve frontend assets in production
-const frontendBuildPath = path.join(__dirname, 'frontend', 'dist');
-if (fs.existsSync(frontendBuildPath)) {
-    app.use(express.static(frontendBuildPath));
-    app.get(/.*/, (req, res) => {
-        res.sendFile(path.join(frontendBuildPath, 'index.html'));
+// Serve frontend assets in production (only when NOT running on Vercel)
+if (!process.env.VERCEL) {
+    const frontendBuildPath = path.join(__dirname, 'frontend', 'dist');
+    if (fs.existsSync(frontendBuildPath)) {
+        app.use(express.static(frontendBuildPath));
+        app.get(/.*/, (req, res) => {
+            res.sendFile(path.join(frontendBuildPath, 'index.html'));
+        });
+    }
+}
+
+// Only listen if not running as a Vercel Serverless Function
+if (!process.env.VERCEL) {
+    app.listen(PORT, () => {
+        console.log(`Server is running on port ${PORT}`);
     });
 }
 
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+module.exports = app;
