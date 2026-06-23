@@ -1,0 +1,7 @@
+node_modules
+.env
+.env.local
+*.docx
+*.pdf
+~$*.docx
+temp_*
