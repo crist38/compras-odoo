@@ -1,4 +1,4 @@
-# Odoo Purchase Porter 🚀
+# Odoo Compras 🚀
 
 Aplicación web moderna para procesar e ingresar automáticamente órdenes de compra al sistema ERP Odoo a partir de documentos digitalizados (formatos **PDF** y **Word .docx**), permitiendo la verificación e inserción automática de productos faltantes en el inventario.
 

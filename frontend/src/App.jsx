@@ -445,7 +445,7 @@ export default function App() {
               Od
             </div>
             <h1 className="text-2xl font-extrabold text-white tracking-tight">
-              Odoo Purchase Porter
+              Odoo Compras
             </h1>
             <p className="text-sm text-slate-400 mt-1">
               Ingreso automático de órdenes de compra e inventario
@@ -530,7 +530,7 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-xl font-extrabold tracking-tight text-white flex items-center gap-2">
-                Odoo Purchase Porter <span className="text-xs bg-slate-800 text-slate-400 py-0.5 px-2 rounded-full font-normal">v1.0</span>
+                Odoo Compras <span className="text-xs bg-slate-800 text-slate-400 py-0.5 px-2 rounded-full font-normal">v1.0</span>
               </h1>
               <p className="text-xs text-slate-400">Conectado como <span className="text-purple-400 font-semibold">{odooEmail}</span> en <span className="text-purple-400 font-semibold">{odooDb}</span></p>
             </div>
