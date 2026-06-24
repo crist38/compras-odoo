@@ -5,8 +5,8 @@ const path = require('path');
 const fs = require('fs');
 const dotenv = require('dotenv');
 const OdooClient = require('./odoo-client');
-const { parseDocx } = require('./docx-parser');
-const { parsePdf } = require('./pdf-parser');
+// Note: parseDocx and parsePdf are loaded lazily inside the upload endpoint
+// to avoid crashing the serverless function if a parser fails to load at startup
 
 // Load environment variables: .env first, then .env.local to override
 const envPath = path.join(__dirname, '.env');
@@ -128,8 +128,10 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         console.log(`Received file: ${fileName}, size: ${fileBuffer.length} bytes`);
 
         if (fileName.endsWith('.docx')) {
+            // Lazy load to avoid crashing serverless on startup
+            const { parseDocx } = require('./docx-parser');
             // Write to a temporary file for Mammoth/AdmZip
-            const tempFilePath = path.join(__dirname, `temp_${Date.now()}_${fileName}`);
+            const tempFilePath = path.join('/tmp', `temp_${Date.now()}_${fileName}`);
             fs.writeFileSync(tempFilePath, fileBuffer);
             try {
                 parsedData = parseDocx(tempFilePath);
@@ -140,6 +142,8 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
                 }
             }
         } else if (fileName.endsWith('.pdf')) {
+            // Lazy load to avoid crashing serverless on startup
+            const { parsePdf } = require('./pdf-parser');
             parsedData = await parsePdf(fileBuffer);
         } else {
             return res.status(400).json({
