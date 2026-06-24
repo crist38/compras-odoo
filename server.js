@@ -51,6 +51,17 @@ function getOdooClient(req) {
     return new OdooClient(odooUrl, odooDb, email, password);
 }
 
+// Health check endpoint - useful for diagnosing Vercel deployments
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        hasOdooUrl: !!process.env.ODOO_URL,
+        hasOdooDb: !!process.env.ODOO_DB,
+        isVercel: !!process.env.VERCEL,
+        nodeVersion: process.version
+    });
+});
+
 // Endpoint: Login with Odoo credentials (email + password)
 app.post('/api/odoo/connect', async (req, res) => {
     try {
@@ -310,5 +321,14 @@ if (!process.env.VERCEL) {
         console.log(`Server is running on port ${PORT}`);
     });
 }
+
+// Global error handler - catches any unhandled errors before they cause a 500
+app.use((err, req, res, next) => {
+    console.error('Unhandled server error:', err);
+    res.status(500).json({
+        success: false,
+        message: err.message || 'Internal server error'
+    });
+});
 
 module.exports = app;
