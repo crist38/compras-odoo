@@ -104,7 +104,16 @@ export default function App() {
         })
       });
 
-      const data = await response.json();
+      let data;
+      try {
+        data = await response.json();
+      } catch {
+        // If response is not JSON (e.g. HTML error page), show HTTP status
+        setConnectionStatus('error');
+        setLoginError(`Error del servidor (HTTP ${response.status}). Verifica las variables de entorno en Vercel.`);
+        return;
+      }
+
       if (data.success) {
         setOdooDb(data.db || '');
         setOdooUrl(data.url || '');
@@ -118,7 +127,7 @@ export default function App() {
       }
     } catch (error) {
       setConnectionStatus('error');
-      setLoginError('No se pudo conectar al servidor. ¿Está corriendo el backend?');
+      setLoginError(`Error de red: ${error.message}. Verifica que el backend esté activo.`);
     }
   };
 
