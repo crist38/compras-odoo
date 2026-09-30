@@ -1,4 +1,10 @@
+// Must be loaded before pdf-parse: it statically requires @napi-rs/canvas and defines
+// DOMMatrix/Path2D/ImageData globals that pdfjs needs. On serverless (Vercel) the
+// dynamic canvas import inside pdfjs is not bundled, causing "DOMMatrix is not defined".
+const { CanvasFactory, getData } = require('pdf-parse/worker');
 const { PDFParse } = require('pdf-parse');
+
+PDFParse.setWorker(getData());
 
 // Parses the "Presupuesto" format (Número/Versión, one block per window with
 // "Pos: Vn Medidas", description and an "Importe /Uds Unidades TOTAL" table)
@@ -235,7 +241,7 @@ function parseQuoteFormatBullets(lines, text) {
 async function parsePdf(fileBuffer) {
     let parser;
     try {
-        parser = new PDFParse({ data: fileBuffer });
+        parser = new PDFParse({ data: fileBuffer, CanvasFactory });
         const data = await parser.getText();
         const text = data.text;
 
