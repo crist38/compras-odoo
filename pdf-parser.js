@@ -86,7 +86,8 @@ function parseQuoteFormat(lines, text) {
         success: true,
         documentType: 'presupuesto',
         orderNumber,
-        supplier: customer || 'Desconocido',
+        supplier: '', // quotes are addressed to the customer; the supplier must be chosen by the user
+        customer,
         date,
         reference,
         shippingAddress: '',
@@ -155,7 +156,8 @@ function parseQuoteFormatPositions(lines, text) {
         success: true,
         documentType: 'presupuesto',
         orderNumber,
-        supplier: customer || 'Desconocido',
+        supplier: '', // quotes are addressed to the customer; the supplier must be chosen by the user
+        customer,
         date,
         reference,
         shippingAddress: '',
@@ -230,7 +232,8 @@ function parseQuoteFormatBullets(lines, text) {
         success: true,
         documentType: 'presupuesto',
         orderNumber,
-        supplier: customer || 'Desconocido',
+        supplier: '', // quotes are addressed to the customer; the supplier must be chosen by the user
+        customer,
         date,
         reference: '',
         shippingAddress: '',

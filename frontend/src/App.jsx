@@ -322,7 +322,10 @@ export default function App() {
 
   const handleParsedOrder = (order) => {
     setOrderData(order);
-    addLog(`Archivo parsed con éxito. Proveedor: ${order.supplier}, N° Orden: ${order.orderNumber || 'S/N'}`, 'success');
+    setSelectedPartnerId(''); // the partner picked for a previous document must not carry over
+    addLog(order.documentType === 'presupuesto'
+      ? `Presupuesto leído con éxito. Cliente: ${order.customer || 'S/N'}, N°: ${order.orderNumber || 'S/N'}. Seleccione el proveedor.`
+      : `Archivo parsed con éxito. Proveedor: ${order.supplier}, N° Orden: ${order.orderNumber || 'S/N'}`, 'success');
     addLog(`Encontrados ${order.items?.length || 0} productos en el documento.`, 'info');
 
     // Automatically match vendor name if found in Odoo partners list
@@ -417,6 +420,11 @@ export default function App() {
     if (connectionStatus !== 'connected') {
       addLog('Por favor conéctese a Odoo antes de importar la orden.', 'error');
       alert('Debe conectarse a Odoo primero.');
+      return;
+    }
+    if (!orderData.supplier) {
+      addLog('Seleccione un proveedor antes de importar la orden.', 'error');
+      alert('Debe seleccionar un proveedor.');
       return;
     }
 
@@ -981,29 +989,60 @@ export default function App() {
                 <div className="mt-6 p-4 bg-slate-950/40 border border-slate-800/80 rounded-xl grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
                   <div>
                     <div className="flex items-center space-x-2">
-                      <h4 className="text-sm font-bold text-slate-300">Proveedor Detectado:</h4>
-                      <span className="bg-purple-900/40 text-purple-300 text-xs px-2 py-0.5 rounded-full border border-purple-800/40 font-semibold">{orderData.supplier}</span>
+                      <h4 className="text-sm font-bold text-slate-300">
+                        {orderData.documentType === 'presupuesto' ? 'Proveedor:' : 'Proveedor Detectado:'}
+                      </h4>
+                      {orderData.supplier ? (
+                        <span className="bg-purple-900/40 text-purple-300 text-xs px-2 py-0.5 rounded-full border border-purple-800/40 font-semibold">{orderData.supplier}</span>
+                      ) : (
+                        <span className="bg-amber-500/10 text-amber-400 text-xs px-2 py-0.5 rounded-full border border-amber-500/20 font-semibold">Sin seleccionar</span>
+                      )}
                     </div>
+                    {orderData.customer && (
+                      <p className="text-xs text-slate-400 mt-1">
+                        Cliente del presupuesto: <span className="font-semibold text-slate-300">{orderData.customer}</span>
+                      </p>
+                    )}
                     <p className="text-xs text-slate-500 mt-1">
-                      Si el proveedor no existe en Odoo, la aplicación lo creará automáticamente con este nombre.
+                      {orderData.documentType === 'presupuesto'
+                        ? 'Seleccione el proveedor al que se le solicitará la cotización.'
+                        : 'Si el proveedor no existe en Odoo, la aplicación lo creará automáticamente con este nombre.'}
                     </p>
                   </div>
                   
                   {connectionStatus === 'connected' ? (
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Asociar a Proveedor Odoo (Opcional)</label>
-                      <select 
-                        className="w-full bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500"
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                        {orderData.documentType === 'presupuesto' ? 'Proveedor Odoo (Obligatorio)' : 'Asociar a Proveedor Odoo (Opcional)'}
+                      </label>
+                      <div className="relative mb-1.5">
+                        <Search className="h-3.5 w-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={partnerSearch}
+                          onChange={(e) => setPartnerSearch(e.target.value)}
+                          placeholder="Buscar proveedor..."
+                          className="w-full bg-slate-950/80 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white focus:outline-none focus:border-purple-500"
+                        />
+                      </div>
+                      <select
+                        className={`w-full bg-slate-950/80 border rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500 ${
+                          orderData.supplier ? 'border-slate-800' : 'border-amber-500/60'
+                        }`}
                         value={selectedPartnerId}
                         onChange={(e) => {
                           setSelectedPartnerId(e.target.value);
                           if (e.target.value) {
                             const name = odooPartners.find(p => p.id === parseInt(e.target.value))?.name;
                             if (name) setOrderData({...orderData, supplier: name});
+                          } else if (orderData.documentType === 'presupuesto') {
+                            setOrderData({...orderData, supplier: ''});
                           }
                         }}
                       >
-                        <option value="">-- Autocreación o búsqueda automática --</option>
+                        <option value="">
+                          {orderData.documentType === 'presupuesto' ? '-- Seleccione un proveedor --' : '-- Autocreación o búsqueda automática --'}
+                        </option>
                         {odooPartners.map(p => (
                           <option key={p.id} value={p.id}>{p.name}</option>
                         ))}
@@ -1107,7 +1146,8 @@ export default function App() {
                   
                   <button
                     onClick={importPurchaseOrder}
-                    disabled={isSyncing}
+                    disabled={isSyncing || !orderData.supplier}
+                    title={!orderData.supplier ? 'Seleccione un proveedor primero' : undefined}
                     className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold py-2 px-6 rounded-xl text-sm transition-all transform active:scale-95 flex items-center justify-center space-x-2 disabled:opacity-50 disabled:pointer-events-none shadow-lg shadow-emerald-950/30"
                   >
                     {isSyncing ? (

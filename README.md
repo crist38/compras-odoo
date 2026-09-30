@@ -43,7 +43,7 @@ Construido utilizando **Node.js (Express)** en el backend y **React (Vite + Tail
 
 Los archivos Word (`.docx`) se procesan con `docx-parser.js`.
 
-> ⚠️ En los presupuestos el único nombre disponible es el del **cliente**, por lo que aparece como "Proveedor detectado". Antes de importar, seleccione el proveedor real en el selector "Asociar a Proveedor Odoo".
+> ⚠️ Los presupuestos están dirigidos al **cliente**, por lo que el proveedor queda **vacío** (el nombre del cliente se muestra solo como referencia). Antes de importar es obligatorio seleccionar el proveedor en el selector "Proveedor Odoo", que incluye un buscador; el botón de importar permanece deshabilitado hasta entonces.
 
 Para agregar un formato nuevo, cree una función `parseQuoteFormat…(lines, text)` en `pdf-parser.js` y agregue su condición de detección en `parsePdf`.
 
