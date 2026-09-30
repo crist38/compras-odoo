@@ -19,9 +19,9 @@ Construido utilizando **Node.js (Express)** en el backend y **React (Vite + Tail
   - Lista solo las oportunidades del CRM de Odoo en etapa **ganada** (`stage_id.is_won`), con búsqueda por nombre o cliente y filtro opcional de "solo con adjuntos PDF/DOCX".
   - Descarga y procesa el adjunto seleccionado directamente desde Odoo, sin subirlo manualmente.
   - La cotización creada queda vinculada a la oportunidad: nombre de la oportunidad como *Documento origen*, copia del adjunto en la cotización y nota en el chatter de ambos registros.
-  - Las oportunidades que ya tienen órdenes de compra (no canceladas) con su nombre como *Documento origen* se marcan como **"Ya procesada: P000XX"**, con enlace a cada orden, y se muestra un aviso al procesarlas de nuevo para evitar duplicados. Siguen disponibles por si se necesita otra orden (por ejemplo, para otro proveedor).
+  - **Una sola orden por oportunidad:** las oportunidades que ya tienen una orden de compra no cancelada (con su nombre como *Documento origen*) se marcan como **"Ya procesada: P000XX"**, con enlace a la orden, y no permiten importar otra (el servidor también lo valida). Para generar una nueva, cancele la existente en Odoo.
 * **Integración inteligente con Odoo:**
-  - **Identificación de Proveedor:** Identifica el proveedor y lo asocia automáticamente o permite buscar/seleccionar de una lista desplegable conectada a Odoo en tiempo real.
+  - **Marca de PVC:** El proveedor de la orden de compra es la **marca de PVC**. Se detecta del documento cuando aparece, se preselecciona si ya existe en Odoo y puede corregirse con un buscador. Si no existe, se crea una sola vez como proveedor (búsqueda por nombre exacto primero) y se reutiliza en las siguientes órdenes.
   - **Verificación de Catálogo de Inventario:** Valida de forma automática qué productos de la orden ya existen en Odoo y cuáles son nuevos.
   - **Creación en Caliente de Productos:** Permite definir códigos/SKU internos y precios de costo para los productos que no existen y crearlos automáticamente en el catálogo de Odoo.
   - **Registro de la Orden de Compra:** Crea la orden de compra directamente en Odoo en estado borrador (*draft*) con todos los productos y cantidades asociados, y ofrece un enlace para abrirla en Odoo.
@@ -37,13 +37,13 @@ Construido utilizando **Node.js (Express)** en el backend y **React (Vite + Tail
 | Formato | Cómo se reconoce | Qué extrae |
 |---|---|---|
 | **Orden de compra** | Tabla con encabezado `Cant. U/M Detalle` | N° de orden, proveedor (`Señores`), fecha, obra, dirección y artículos |
-| **Presupuesto (Pos: V1)** | Bloques `Pos: V1 Medidas: …` y tabla `Importe /Uds · Unidades · TOTAL` | N° (`Número:`), fecha, referencia, cliente (`Estimado …`), artículos con precio, posición y medidas |
-| **Presupuesto (Pos. 1 - V1)** | Bloques `Pos. N - V1` cerrados por `UDS: cant  precio  total` | N° (`PRESUPUESTO 2026/30/1`), fecha, obra, cliente, artículos (descripción armada con tipo, color, medidas, perfil y vidrio) |
-| **Presupuesto (viñetas ⦁)** | Líneas `V1 1 748.538 CLP$ 748.538 CLP$` y encabezado `TIPO UDS VALOR NETO` | N° (`PRESUPUESTO Nº`), fecha, cliente (`OBRA:`), artículos (descripción con tipo, serie, color, medida y cristal) |
+| **Presupuesto (Pos: V1)** | Bloques `Pos: V1 Medidas: …` y tabla `Importe /Uds · Unidades · TOTAL` | N° (`Número:`), fecha, referencia, cliente (`Estimado …`), artículos con precio, posición y medidas. Marca: solo si aparece `Fabricante:` (normalmente no viene) |
+| **Presupuesto (Pos. 1 - V1)** | Bloques `Pos. N - V1` cerrados por `UDS: cant  precio  total` | N° (`PRESUPUESTO 2026/30/1`), fecha, obra, cliente, artículos (descripción armada con tipo, color, medidas, perfil y vidrio). Marca: se deduce de la serie del perfil según `SERIES_BRANDS` en `pdf-parser.js` (ej. `ASPEN C60` → serie ASPEN → marca `DVP`); si la serie no está en la tabla, queda vacía para seleccionarla |
+| **Presupuesto (viñetas ⦁)** | Líneas `V1 1 748.538 CLP$ 748.538 CLP$` y encabezado `TIPO UDS VALOR NETO` | N° (`PRESUPUESTO Nº`), fecha, cliente (`OBRA:`), artículos (descripción con tipo, serie, color, medida y cristal). Marca: `⦁ Fabricante:` (ej. `SODAL`) |
 
 Los archivos Word (`.docx`) se procesan con `docx-parser.js`.
 
-> ⚠️ Los presupuestos están dirigidos al **cliente**, por lo que el proveedor queda **vacío** (el nombre del cliente se muestra solo como referencia). Antes de importar es obligatorio seleccionar el proveedor en el selector "Proveedor Odoo", que incluye un buscador; el botón de importar permanece deshabilitado hasta entonces.
+> ⚠️ Los presupuestos están dirigidos al **cliente**: su nombre se muestra solo como referencia. La **marca de PVC** detectada se usa como proveedor de la orden; si no se detecta, es obligatorio seleccionarla (con buscador) y el botón de importar permanece deshabilitado hasta entonces.
 
 Para agregar un formato nuevo, cree una función `parseQuoteFormat…(lines, text)` en `pdf-parser.js` y agregue su condición de detección en `parsePdf`.
 

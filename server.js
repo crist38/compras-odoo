@@ -445,7 +445,25 @@ app.post('/api/odoo/create-purchase-order', async (req, res) => {
             return res.status(400).json({ success: false, message: 'Items list cannot be empty.' });
         }
 
-        // 1. Find or create the vendor (partner) in Odoo
+        // 0. Only one purchase order per CRM opportunity (linked through the source document)
+        let lead = null;
+        if (leadId) {
+            const leads = await client.executeKw('crm.lead', 'read', [[parseInt(leadId, 10)], ['name']]);
+            lead = leads && leads[0] ? { id: leads[0].id, name: leads[0].name } : null;
+        }
+        if (lead) {
+            const existing = await client.executeKw('purchase.order', 'search_read', [
+                [['origin', '=', lead.name], ['state', '!=', 'cancel']]
+            ], { fields: ['name'], limit: 1 });
+            if (existing.length > 0) {
+                return res.status(409).json({
+                    success: false,
+                    message: `La oportunidad "${lead.name}" ya tiene la orden de compra ${existing[0].name}. Cancélela en Odoo si necesita generar una nueva.`
+                });
+            }
+        }
+
+        // 1. Find or create the PVC brand (vendor partner) in Odoo
         const partner = await client.findOrCreatePartner(supplierName);
 
         // 2. Prepare Odoo purchase lines
@@ -457,14 +475,7 @@ app.post('/api/odoo/create-purchase-order', async (req, res) => {
             price_unit: item.priceUnit || 0.0
         }));
 
-        // 3. If it comes from the CRM, the opportunity name becomes the source document
-        let lead = null;
-        if (leadId) {
-            const leads = await client.executeKw('crm.lead', 'read', [[parseInt(leadId, 10)], ['name']]);
-            lead = leads && leads[0] ? { id: leads[0].id, name: leads[0].name } : null;
-        }
-
-        // 4. Create the purchase order in Odoo
+        // 3. Create the purchase order in Odoo (from the CRM, the opportunity name is the source document)
         const result = await client.createPurchaseOrder(
             partner.id,
             poItems,
@@ -473,7 +484,7 @@ app.post('/api/odoo/create-purchase-order', async (req, res) => {
             lead ? lead.name : null
         );
 
-        // 5. Link the purchase order back to the CRM opportunity (non-fatal)
+        // 4. Link the purchase order back to the CRM opportunity (non-fatal)
         const warnings = [];
         if (lead) {
             if (attachmentId) {
@@ -484,7 +495,7 @@ app.post('/api/odoo/create-purchase-order', async (req, res) => {
                 }
             }
             try {
-                await client.postNote('crm.lead', lead.id, `Cotización de compra ${result.name} creada desde Odoo Compras (proveedor: ${partner.name}).`);
+                await client.postNote('crm.lead', lead.id, `Cotización de compra ${result.name} creada desde Odoo Compras (marca de PVC: ${partner.name}).`);
                 await client.postNote('purchase.order', result.id, `Creada desde la oportunidad CRM: ${lead.name}`);
             } catch (error) {
                 warnings.push(`No se pudo registrar la nota en el chatter: ${error.message}`);

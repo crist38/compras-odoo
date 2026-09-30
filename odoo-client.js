@@ -86,21 +86,24 @@ class OdooClient {
     // Helper to find or create a vendor
     async findOrCreatePartner(name) {
         console.log(`Searching for partner: "${name}"`);
-        const partners = await this.executeKw("res.partner", "search_read", [
-            [["name", "ilike", name], ["supplier_rank", ">", 0]]
-        ], {
-            fields: ["id", "name"],
-            limit: 1
-        });
+        // Exact name (case-insensitive) first, so a brand like "ASPEN" doesn't match "Aspen Construcciones"
+        for (const operator of ["=ilike", "ilike"]) {
+            const partners = await this.executeKw("res.partner", "search_read", [
+                [["name", operator, name], ["supplier_rank", ">", 0]]
+            ], {
+                fields: ["id", "name"],
+                limit: 1
+            });
 
-        if (partners && partners.length > 0) {
-            console.log(`Partner found: ${partners[0].name} (ID: ${partners[0].id})`);
-            return partners[0];
+            if (partners && partners.length > 0) {
+                console.log(`Partner found (${operator}): ${partners[0].name} (ID: ${partners[0].id})`);
+                return partners[0];
+            }
         }
 
-        // If not found, search without the supplier_rank constraint in case it's a new system or rank is not set
+        // If not found, search an exact name without the supplier_rank constraint in case the rank is not set
         const partnersAny = await this.executeKw("res.partner", "search_read", [
-            [["name", "ilike", name]]
+            [["name", "=ilike", name]]
         ], {
             fields: ["id", "name"],
             limit: 1

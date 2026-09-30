@@ -82,17 +82,34 @@ function parseQuoteFormat(lines, text) {
         }
     });
 
+    // This format usually names only the product line (e.g. "LINEA ADVANCE"), not the brand
+    const brand = mostFrequent([...text.matchAll(/Fabricante:\s*([^\n]+)/gi)].map(m => m[1].trim().toUpperCase()));
+
     return {
         success: true,
         documentType: 'presupuesto',
         orderNumber,
-        supplier: '', // quotes are addressed to the customer; the supplier must be chosen by the user
+        supplier: brand, // the PVC brand is the purchase order partner (empty if not detected)
+        brand,
         customer,
         date,
         reference,
         shippingAddress: '',
         items
     };
+}
+
+// PVC profile series -> brand. Series names appear in quotes (e.g. "ASPEN C60"), the brand
+// usually doesn't. Add new series here as they show up.
+const SERIES_BRANDS = {
+    ASPEN: 'DVP'
+};
+
+// Returns the most frequent non-empty value, or '' (used to pick the PVC brand of a quote)
+function mostFrequent(values) {
+    const counts = {};
+    values.filter(Boolean).forEach(v => { counts[v] = (counts[v] || 0) + 1; });
+    return Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0] || '';
 }
 
 // Parses the "PRESUPUESTO 2026/30/1" format (blocks starting with "Pos. N - V1",
@@ -110,6 +127,7 @@ function parseQuoteFormatPositions(lines, text) {
     const qtyRegex = /UDS:\s*([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s*$/i;
 
     const items = [];
+    const profileBrands = [];
     let current = null;
 
     for (const line of lines) {
@@ -119,6 +137,13 @@ function parseQuoteFormatPositions(lines, text) {
             continue;
         }
         if (!current) continue;
+
+        // The line after "Ancho/Alto" is the profile series, e.g. "ASPEN S60-H71" -> series ASPEN -> brand DVP
+        if (current.expectProfile) {
+            current.expectProfile = false;
+            const series = (line.trim().split(/\s+/)[0] || '').toUpperCase();
+            profileBrands.push(SERIES_BRANDS[series] || '');
+        }
 
         const qtyMatch = line.match(qtyRegex);
         if (qtyMatch) {
@@ -140,6 +165,7 @@ function parseQuoteFormatPositions(lines, text) {
         if (sizeMatch) {
             current.measures = `${sizeMatch[1].replace(/\./g, '')} x ${sizeMatch[2].replace(/\./g, '')} mm`;
             current.details.push(current.measures);
+            current.expectProfile = true;
             continue;
         }
 
@@ -152,11 +178,14 @@ function parseQuoteFormatPositions(lines, text) {
         current.details.push(line.replace(/\s+/g, ' ').trim());
     }
 
+    const brand = mostFrequent(profileBrands);
+
     return {
         success: true,
         documentType: 'presupuesto',
         orderNumber,
-        supplier: '', // quotes are addressed to the customer; the supplier must be chosen by the user
+        supplier: brand, // the PVC brand is the purchase order partner (empty if not detected)
+        brand,
         customer,
         date,
         reference,
@@ -228,11 +257,16 @@ function parseQuoteFormatBullets(lines, text) {
         }
     }
 
+    // "⦁ Fabricante: SODAL" identifies the PVC brand
+    const manufacturers = [...text.matchAll(/Fabricante:\s*([^\n]+)/gi)].map(m => m[1].trim().toUpperCase());
+    const brand = mostFrequent(manufacturers);
+
     return {
         success: true,
         documentType: 'presupuesto',
         orderNumber,
-        supplier: '', // quotes are addressed to the customer; the supplier must be chosen by the user
+        supplier: brand, // the PVC brand is the purchase order partner (empty if not detected)
+        brand,
         customer,
         date,
         reference: '',
