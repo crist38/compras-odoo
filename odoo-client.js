@@ -192,7 +192,7 @@ class OdooClient {
     }
 
     // Helper to create a purchase order
-    async createPurchaseOrder(partnerId, items, orderDate, clientOrderRef) {
+    async createPurchaseOrder(partnerId, items, orderDate, clientOrderRef, origin) {
         console.log(`Creating Purchase Order in Odoo for partner ID: ${partnerId}...`);
 
         // Prepare order lines
@@ -222,6 +222,10 @@ class OdooClient {
             poData.partner_ref = clientOrderRef; // Supplier Reference / Order Number
         }
 
+        if (origin) {
+            poData.origin = origin; // Source Document (e.g. CRM opportunity name)
+        }
+
         const poId = await this.executeKw("purchase.order", "create", [poData]);
         console.log(`Purchase Order created with ID: ${poId}`);
         
@@ -235,6 +239,24 @@ class OdooClient {
             id: poId,
             name: poDetails && poDetails.length > 0 ? poDetails[0].name : `PO #${poId}`
         };
+    }
+
+    // Helper to duplicate an attachment onto another record
+    async copyAttachment(attachmentId, resModel, resId) {
+        const result = await this.executeKw("ir.attachment", "copy", [[attachmentId]], {
+            default: { res_model: resModel, res_id: resId }
+        });
+        // Odoo < 17 returns an int, Odoo 17+ may return a list of ids
+        return Array.isArray(result) ? result[0] : result;
+    }
+
+    // Helper to log an internal note in a record's chatter
+    async postNote(model, resId, body) {
+        return await this.executeKw(model, "message_post", [[resId]], {
+            body,
+            message_type: "comment",
+            subtype_xmlid: "mail.mt_note"
+        });
     }
 }
 

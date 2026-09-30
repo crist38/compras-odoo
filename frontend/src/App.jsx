@@ -17,10 +17,15 @@ import {
   Check, 
   AlertTriangle,
   Sun,
-  Moon
+  Moon,
+  Briefcase,
+  Paperclip,
+  ChevronDown,
+  ChevronRight
 } from 'lucide-react';
 
-const API_BASE_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+// In Vite dev mode the backend runs separately; in production it serves the frontend itself
+const API_BASE_URL = import.meta.env.DEV
   ? 'http://localhost:5000/api'
   : '/api';
 
@@ -64,6 +69,16 @@ export default function App() {
   const [file, setFile] = useState(null);
   const [isParsing, setIsParsing] = useState(false);
   
+  // CRM State (document source: opportunity attachments or manual upload)
+  const [sourceMode, setSourceMode] = useState('crm');
+  const [crmLeads, setCrmLeads] = useState([]);
+  const [crmSearch, setCrmSearch] = useState('');
+  const [onlyWithAttachments, setOnlyWithAttachments] = useState(true);
+  const [isLoadingLeads, setIsLoadingLeads] = useState(false);
+  const [expandedLeadId, setExpandedLeadId] = useState(null);
+  const [selectedLead, setSelectedLead] = useState(null);
+  const [selectedAttachment, setSelectedAttachment] = useState(null);
+
   // Parsed Order Data
   const [orderData, setOrderData] = useState(null);
   
@@ -161,6 +176,42 @@ export default function App() {
     }
   }, [partnerSearch, connectionStatus]);
 
+  const fetchCrmLeads = async () => {
+    setIsLoadingLeads(true);
+    try {
+      const response = await fetch(`${API_BASE_URL}/odoo/crm/leads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          odooCredentials: getOdooCredentialsObj(),
+          search: crmSearch,
+          onlyWithAttachments
+        })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setCrmLeads(data.leads);
+        addLog(`Cargadas ${data.leads.length} oportunidades del CRM.`, 'info');
+      } else {
+        addLog(`Error al cargar oportunidades del CRM: ${data.message}`, 'error');
+      }
+    } catch (error) {
+      addLog(`Error de red al cargar el CRM: ${error.message}`, 'error');
+    } finally {
+      setIsLoadingLeads(false);
+    }
+  };
+
+  // Reload CRM opportunities when the search or filter changes
+  useEffect(() => {
+    if (connectionStatus === 'connected') {
+      const delayDebounce = setTimeout(() => {
+        fetchCrmLeads();
+      }, 500);
+      return () => clearTimeout(delayDebounce);
+    }
+  }, [crmSearch, onlyWithAttachments, connectionStatus]);
+
   // Drag & drop handlers
   const handleDrag = (e) => {
     e.preventDefault();
@@ -195,7 +246,9 @@ export default function App() {
       return;
     }
 
-    setFile(selectedFile);
+    setFile({ name: selectedFile.name, size: selectedFile.size });
+    setSelectedLead(null);
+    setSelectedAttachment(null);
     setIsParsing(true);
     setOrderData(null);
     setVerifiedItems([]);
@@ -213,27 +266,7 @@ export default function App() {
 
       const data = await response.json();
       if (data.success) {
-        const order = data.data;
-        setOrderData(order);
-        addLog(`Archivo parsed con éxito. Proveedor: ${order.supplier}, N° Orden: ${order.orderNumber || 'S/N'}`, 'success');
-        addLog(`Encontrados ${order.items?.length || 0} productos en el documento.`, 'info');
-
-        // Automatically match vendor name if found in Odoo partners list
-        if (connectionStatus === 'connected') {
-          verifyProductsInOdoo(order.items);
-        } else {
-          // Put in verified state but marked as unverified until connection established
-          setVerifiedItems(order.items.map(item => ({
-            ...item,
-            exists: false,
-            odooProduct: null,
-            standard_price: 0,
-            list_price: 0,
-            default_code: '',
-            type: 'product',
-            createInOdoo: true
-          })));
-        }
+        handleParsedOrder(data.data);
       } else {
         addLog(`Error al parsear el archivo: ${data.message}`, 'error');
         setFile(null);
@@ -244,6 +277,74 @@ export default function App() {
     } finally {
       setIsParsing(false);
     }
+  };
+
+  // Download an attachment of a CRM opportunity from Odoo and parse it
+  const processCrmAttachment = async (lead, attachment) => {
+    setFile({ name: attachment.name, size: attachment.size });
+    setSelectedLead(lead);
+    setSelectedAttachment(attachment);
+    setIsParsing(true);
+    setOrderData(null);
+    setVerifiedItems([]);
+    setPoResult(null);
+    addLog(`Procesando adjunto "${attachment.name}" de la oportunidad "${lead.name}"...`, 'info');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/odoo/crm/parse-attachment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          odooCredentials: getOdooCredentialsObj(),
+          attachmentId: attachment.id
+        })
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        handleParsedOrder(data.data);
+      } else {
+        addLog(`Error al parsear el adjunto: ${data.message}`, 'error');
+        setFile(null);
+        setSelectedAttachment(null);
+      }
+    } catch (error) {
+      addLog(`Error de red al parsear adjunto: ${error.message}`, 'error');
+      setFile(null);
+      setSelectedAttachment(null);
+    } finally {
+      setIsParsing(false);
+    }
+  };
+
+  const handleParsedOrder = (order) => {
+    setOrderData(order);
+    addLog(`Archivo parsed con éxito. Proveedor: ${order.supplier}, N° Orden: ${order.orderNumber || 'S/N'}`, 'success');
+    addLog(`Encontrados ${order.items?.length || 0} productos en el documento.`, 'info');
+
+    // Automatically match vendor name if found in Odoo partners list
+    if (connectionStatus === 'connected') {
+      verifyProductsInOdoo(order.items);
+    } else {
+      // Put in verified state but marked as unverified until connection established
+      setVerifiedItems(order.items.map(item => ({
+        ...item,
+        exists: false,
+        odooProduct: null,
+        standard_price: item.unitPrice || 0,
+        list_price: 0,
+        default_code: '',
+        type: 'product',
+        createInOdoo: true
+      })));
+    }
+  };
+
+  const clearSelectedDocument = () => {
+    setFile(null);
+    setOrderData(null);
+    setSelectedLead(null);
+    setSelectedAttachment(null);
   };
 
   const verifyProductsInOdoo = async (itemsToVerify) => {
@@ -279,7 +380,7 @@ export default function App() {
           return {
             ...item,
             default_code: item.odooProduct?.default_code || generatedCode,
-            standard_price: item.odooProduct?.standard_price || 0.0,
+            standard_price: item.unitPrice || item.odooProduct?.standard_price || 0.0, // prefer the price in the document
             list_price: item.odooProduct?.list_price || 0.0,
             type: item.odooProduct?.type || 'product', // product = storable
             createInOdoo: !item.exists // Auto-check if doesn't exist
@@ -396,7 +497,9 @@ export default function App() {
           supplierName: orderData.supplier,
           items: finalPoLines,
           orderDate: orderData.date,
-          orderNumber: orderData.orderNumber
+          orderNumber: orderData.orderNumber,
+          leadId: selectedLead?.id || null,
+          attachmentId: selectedAttachment?.id || null
         })
       });
 
@@ -405,6 +508,10 @@ export default function App() {
         setPoResult(dataPo);
         addLog(`¡ÉXITO! Orden de compra ${dataPo.purchaseOrder.name} registrada en Odoo.`, 'success');
         addLog(`Proveedor asociado: ${dataPo.partner.name} (ID: ${dataPo.partner.id})`, 'info');
+        if (dataPo.lead) {
+          addLog(`Vinculada a la oportunidad CRM "${dataPo.lead.name}" (documento origen + nota en el chatter).`, 'info');
+        }
+        (dataPo.warnings || []).forEach(w => addLog(w, 'warning'));
         alert(`Orden de compra ${dataPo.purchaseOrder.name} creada correctamente.`);
       } else {
         throw new Error(dataPo.message);
@@ -425,6 +532,10 @@ export default function App() {
     setVerifiedItems([]);
     setPoResult(null);
     setFile(null);
+    setCrmLeads([]);
+    setSelectedLead(null);
+    setSelectedAttachment(null);
+    setExpandedLeadId(null);
     setLogs([]);
   };
 
@@ -583,11 +694,134 @@ export default function App() {
           {/* Document Upload */}
           <section className="glass-panel rounded-2xl p-6 shadow-xl">
             <div className="flex items-center space-x-2 mb-4 border-b border-slate-800 pb-3">
-              <UploadCloud className="h-5 w-5 text-indigo-400" />
-              <h2 className="text-lg font-bold text-white">Subir Orden de Compra</h2>
+              <FileText className="h-5 w-5 text-indigo-400" />
+              <h2 className="text-lg font-bold text-white">Documento de Origen</h2>
             </div>
-            
-            <div 
+
+            {/* Source tabs */}
+            <div className="grid grid-cols-2 gap-1 p-1 mb-4 bg-slate-950/60 border border-slate-800 rounded-xl">
+              <button
+                onClick={() => setSourceMode('crm')}
+                className={`flex items-center justify-center space-x-1.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                  sourceMode === 'crm' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Briefcase className="h-3.5 w-3.5" />
+                <span>Desde CRM</span>
+              </button>
+              <button
+                onClick={() => setSourceMode('upload')}
+                className={`flex items-center justify-center space-x-1.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                  sourceMode === 'upload' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <UploadCloud className="h-3.5 w-3.5" />
+                <span>Subir archivo</span>
+              </button>
+            </div>
+
+            {sourceMode === 'crm' ? (
+            <div>
+              <div className="flex items-center space-x-2">
+                <div className="relative flex-1">
+                  <Search className="h-3.5 w-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={crmSearch}
+                    onChange={(e) => setCrmSearch(e.target.value)}
+                    placeholder="Buscar oportunidad ganada o cliente..."
+                    className="w-full bg-slate-950/80 border border-slate-800 rounded-lg pl-8 pr-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+                <button
+                  onClick={fetchCrmLeads}
+                  disabled={isLoadingLeads}
+                  title="Recargar oportunidades"
+                  className="p-2 bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 rounded-lg transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isLoadingLeads ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
+
+              <label className="flex items-center space-x-2 mt-2 text-[11px] text-slate-400 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={onlyWithAttachments}
+                  onChange={(e) => setOnlyWithAttachments(e.target.checked)}
+                  className="rounded bg-slate-950 border-slate-800 text-purple-600 focus:ring-0 focus:ring-offset-0"
+                />
+                <span>Solo oportunidades con adjuntos PDF/DOCX</span>
+              </label>
+
+              <div className="mt-3 max-h-[420px] overflow-y-auto space-y-1.5 pr-1">
+                {isLoadingLeads && crmLeads.length === 0 ? (
+                  <div className="flex items-center justify-center py-8 text-slate-500 text-xs space-x-2">
+                    <Loader2 className="animate-spin h-4 w-4" />
+                    <span>Cargando CRM...</span>
+                  </div>
+                ) : crmLeads.length === 0 ? (
+                  <p className="text-center text-xs text-slate-500 py-8">No se encontraron oportunidades ganadas.</p>
+                ) : (
+                  crmLeads.map(lead => {
+                    const isExpanded = expandedLeadId === lead.id;
+                    return (
+                      <div
+                        key={lead.id}
+                        className={`border rounded-xl bg-slate-950/40 transition-colors ${
+                          selectedLead?.id === lead.id ? 'border-purple-500/60' : 'border-slate-800'
+                        }`}
+                      >
+                        <button
+                          onClick={() => setExpandedLeadId(isExpanded ? null : lead.id)}
+                          className="w-full flex items-start space-x-2 p-2.5 text-left"
+                        >
+                          {isExpanded
+                            ? <ChevronDown className="h-4 w-4 text-slate-500 mt-0.5 flex-shrink-0" />
+                            : <ChevronRight className="h-4 w-4 text-slate-500 mt-0.5 flex-shrink-0" />}
+                          <div className="flex-1 overflow-hidden">
+                            <p className="text-xs font-semibold text-slate-200 truncate" title={lead.name}>{lead.name}</p>
+                            <p className="text-[10px] text-slate-500 truncate">
+                              {lead.partner || 'Sin cliente'}{lead.stage ? ` · ${lead.stage}` : ''}
+                            </p>
+                          </div>
+                          <span className="flex items-center space-x-0.5 text-[10px] text-slate-400 flex-shrink-0">
+                            <Paperclip className="h-3 w-3" />
+                            <span>{lead.attachments.length}</span>
+                          </span>
+                        </button>
+
+                        {isExpanded && (
+                          <div className="px-2.5 pb-2.5 space-y-1">
+                            {lead.attachments.length === 0 ? (
+                              <p className="text-[11px] text-slate-500 pl-6">Sin adjuntos PDF/DOCX.</p>
+                            ) : (
+                              lead.attachments.map(att => (
+                                <button
+                                  key={att.id}
+                                  onClick={() => processCrmAttachment(lead, att)}
+                                  disabled={isParsing}
+                                  className={`w-full flex items-center space-x-2 pl-6 pr-2 py-1.5 rounded-lg text-left text-[11px] transition-colors disabled:opacity-50 ${
+                                    selectedAttachment?.id === att.id
+                                      ? 'bg-purple-500/15 text-purple-300'
+                                      : 'text-slate-300 hover:bg-slate-900'
+                                  }`}
+                                >
+                                  <FileText className="h-3.5 w-3.5 text-indigo-400 flex-shrink-0" />
+                                  <span className="truncate flex-1" title={att.name}>{att.name}</span>
+                                  <span className="text-slate-500 flex-shrink-0">{((att.size || 0) / 1024).toFixed(0)} KB</span>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+            ) : (
+            <div
               onDragEnter={handleDrag}
               onDragLeave={handleDrag}
               onDragOver={handleDrag}
@@ -620,6 +854,7 @@ export default function App() {
                 </label>
               </div>
             </div>
+            )}
 
             {/* Selected File Details */}
             {file && (
@@ -628,14 +863,17 @@ export default function App() {
                   <FileText className="h-8 w-8 text-indigo-400 flex-shrink-0" />
                   <div className="overflow-hidden">
                     <p className="text-xs font-semibold text-slate-200 truncate">{file.name}</p>
-                    <p className="text-[10px] text-slate-500">{(file.size / 1024).toFixed(1)} KB</p>
+                    <p className="text-[10px] text-slate-500">
+                      {((file.size || 0) / 1024).toFixed(1)} KB
+                      {selectedLead && <> · CRM: <span className="text-purple-400">{selectedLead.name}</span></>}
+                    </p>
                   </div>
                 </div>
                 {isParsing ? (
                   <Loader2 className="animate-spin h-5 w-5 text-indigo-400 flex-shrink-0" />
                 ) : (
-                  <button 
-                    onClick={() => { setFile(null); setOrderData(null); }}
+                  <button
+                    onClick={clearSelectedDocument}
                     className="p-1 text-slate-500 hover:text-rose-400 rounded transition-colors"
                   >
                     <Trash2 className="h-4 w-4" />
@@ -882,7 +1120,25 @@ export default function App() {
                       <p className="text-slate-500">Número original doc:</p>
                       <p className="font-semibold text-slate-300">{orderData.orderNumber || 'S/N'}</p>
                     </div>
+                    {poResult.lead && (
+                      <div className="col-span-2">
+                        <p className="text-slate-500">Oportunidad CRM vinculada:</p>
+                        <p className="font-semibold text-purple-400">{poResult.lead.name}</p>
+                      </div>
+                    )}
                   </div>
+
+                  {odooUrl && (
+                    <a
+                      href={`${odooUrl.replace(/\/$/, '')}/web#id=${poResult.purchaseOrder.id}&model=purchase.order&view_type=form`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center space-x-1.5 mt-4 text-xs font-semibold text-emerald-400 hover:text-emerald-300"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      <span>Abrir cotización en Odoo</span>
+                    </a>
+                  )}
                 </section>
               )}
             </div>
@@ -892,7 +1148,7 @@ export default function App() {
               <FileText className="h-16 w-16 text-slate-700 mb-4 animate-float" />
               <h3 className="text-lg font-bold text-white">Ningún documento seleccionado</h3>
               <p className="text-sm text-slate-400 max-w-sm mt-2">
-                Suba una orden de compra en formato PDF o Word (.docx) a la izquierda para extraer automáticamente su contenido y procesarlo.
+                Seleccione un adjunto de una oportunidad del CRM, o suba una orden de compra en PDF o Word (.docx), para extraer automáticamente su contenido y procesarlo.
               </p>
             </div>
           )}

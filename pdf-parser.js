@@ -1,14 +1,256 @@
 const { PDFParse } = require('pdf-parse');
 
+// Parses the "Presupuesto" format (Número/Versión, one block per window with
+// "Pos: Vn Medidas", description and an "Importe /Uds Unidades TOTAL" table)
+function parseQuoteFormat(lines, text) {
+    const orderNumber = (text.match(/N[úu]mero:\s*(\d+)/i) || [])[1] || '';
+    const date = (text.match(/Fecha:\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4})/i) || [])[1] || '';
+    const reference = ((text.match(/Referencia:\s*([^\n]+)/i) || [])[1] || '').trim();
+    const customer = ((text.match(/Estimad[oa]s?\s+([^\n:]+):/i) || [])[1] || '').trim();
+
+    const toNumber = (str) => parseFloat(str.replace(/[^\d,]/g, '').replace(',', '.')) || 0;
+
+    // Lines that are labels, page headers or footers, never part of a description
+    const isNoise = (line) =>
+        /^(Descripci[óo]n:|Color:|Referencia:|N[úu]mero:|Pag\s*\d+|P[áa]gina:)/i.test(line) ||
+        /Importe\s*\/\s*Uds/i.test(line) ||
+        /^--.*--$/.test(line) ||
+        /^(PASAJE|-\s*LA SERE|TEL:)/i.test(line) ||
+        line.includes('@');
+
+    // Price row: quantity + unit price + total in any order, e.g. "$521169 1 $521.169" or "1 $521.169\t$521169"
+    const parsePriceLine = (line) => {
+        if (!/^[\d\s$.,]+$/.test(line)) return null;
+        const tokens = line.split(/\s+/).filter(Boolean);
+        const prices = tokens.filter(t => t.startsWith('$')).map(toNumber);
+        const qtyTokens = tokens.filter(t => !t.startsWith('$'));
+        if (prices.length !== 2 || qtyTokens.length !== 1) return null;
+        return {
+            qty: parseFloat(qtyTokens[0].replace(',', '.')) || 1,
+            unitPrice: Math.min(...prices),
+            total: Math.max(...prices)
+        };
+    };
+    const posLineRegex = /^Pos:\s*(\S+)\s+Medidas:\s*(.+)$/i;
+
+    const items = [];
+    const positions = [];
+    let buffer = [];
+
+    for (const line of lines) {
+        const posMatch = line.match(posLineRegex);
+        if (posMatch) {
+            positions.push({ pos: posMatch[1], measures: posMatch[2].trim() });
+            continue;
+        }
+
+        const price = parsePriceLine(line);
+        if (price) {
+            items.push({
+                qty: price.qty,
+                unit: 'UNIDADES',
+                description: buffer.join(' ').replace(/\s+/g, ' ').trim() || 'Producto sin descripción',
+                unitPrice: price.unitPrice,
+                total: price.total
+            });
+            buffer = [];
+            continue;
+        }
+
+        // A new page resets the description being accumulated
+        if (/^Pag\s*\d+$/i.test(line)) {
+            buffer = [];
+            continue;
+        }
+
+        if (!isNoise(line)) {
+            buffer.push(line);
+        }
+    }
+
+    // Pos markers appear in the same order as the items
+    items.forEach((item, i) => {
+        if (positions[i]) {
+            item.position = positions[i].pos;
+            item.measures = positions[i].measures;
+        }
+    });
+
+    return {
+        success: true,
+        documentType: 'presupuesto',
+        orderNumber,
+        supplier: customer || 'Desconocido',
+        date,
+        reference,
+        shippingAddress: '',
+        items
+    };
+}
+
+// Parses the "PRESUPUESTO 2026/30/1" format (blocks starting with "Pos. N - V1",
+// details per line and a closing "M2 Unit. ... UDS: qty  unit price  total" line)
+function parseQuoteFormatPositions(lines, text) {
+    const orderNumber = (text.match(/PRESUPUESTO\s+([\w\/\-]+)/i) || [])[1] || '';
+    const date = (lines.find(l => /^\d{1,2}[.\/\-]\d{1,2}[.\/\-]\d{4}$/.test(l)) || '');
+    const reference = ((text.match(/Obra:\s*([^\n]+)/i) || [])[1] || '').trim();
+    const customerLine = lines.find(l => /^\d+\s*-\s*\S/.test(l) && !/^Pos\./i.test(l)) || '';
+    const customer = customerLine.replace(/^\d+\s*-\s*/, '').trim();
+
+    const toNumber = (str) => parseFloat(String(str).replace(/\./g, '').replace(',', '.')) || 0;
+
+    const posRegex = /^Pos\.\s*(\d+)\s*-\s*(.+?)\s+Importe/i;
+    const qtyRegex = /UDS:\s*([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)\s*$/i;
+
+    const items = [];
+    let current = null;
+
+    for (const line of lines) {
+        const posMatch = line.match(posRegex);
+        if (posMatch) {
+            current = { position: posMatch[2].trim(), details: [] };
+            continue;
+        }
+        if (!current) continue;
+
+        const qtyMatch = line.match(qtyRegex);
+        if (qtyMatch) {
+            const [title, ...rest] = current.details;
+            items.push({
+                qty: toNumber(qtyMatch[1]) || 1,
+                unit: 'UNIDADES',
+                description: [title, ...rest].filter(Boolean).join(' - ') || 'Producto sin descripción',
+                unitPrice: toNumber(qtyMatch[2]),
+                total: toNumber(qtyMatch[3]),
+                position: current.position,
+                measures: current.measures || ''
+            });
+            current = null;
+            continue;
+        }
+
+        const sizeMatch = line.match(/^Ancho:\s*([\d.]+)\s*-\s*Alto:\s*([\d.]+)/i);
+        if (sizeMatch) {
+            current.measures = `${sizeMatch[1].replace(/\./g, '')} x ${sizeMatch[2].replace(/\./g, '')} mm`;
+            current.details.push(current.measures);
+            continue;
+        }
+
+        const colorMatch = line.match(/^Color:\s*(.*)$/i);
+        if (colorMatch) {
+            if (colorMatch[1].trim()) current.details.push(colorMatch[1].trim());
+            continue;
+        }
+
+        current.details.push(line.replace(/\s+/g, ' ').trim());
+    }
+
+    return {
+        success: true,
+        documentType: 'presupuesto',
+        orderNumber,
+        supplier: customer || 'Desconocido',
+        date,
+        reference,
+        shippingAddress: '',
+        items
+    };
+}
+
+// Parses the "PRESUPUESTO Nº: A/42 - 1" format (title + "⦁ Key: value" bullets,
+// closed by a "V1 1 748.538 CLP$ 748.538 CLP$" line: type, units, net price, total)
+function parseQuoteFormatBullets(lines, text) {
+    const orderNumber = ((text.match(/PRESUPUESTO\s*N[º°o]?\s*:\s*([^\n]+)/i) || [])[1] || '').replace(/\s+/g, '').trim();
+    const date = (text.match(/FECHA:\s*(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{4})/i) || [])[1] || '';
+    const obraIndex = lines.findIndex(l => /^OBRA:/i.test(l));
+    const obraInline = obraIndex >= 0 ? lines[obraIndex].replace(/^OBRA:\s*/i, '').trim() : '';
+    const customer = (obraInline || (obraIndex >= 0 ? lines[obraIndex + 1] || '' : '')).replace(/^\d+\s+/, '').trim();
+
+    const toNumber = (str) => parseFloat(String(str).replace(/\./g, '').replace(',', '.')) || 0;
+
+    const priceRegex = /^(\S+)\s+([\d.,]+)\s+([\d.,]+)\s*CLP\$\s+([\d.,]+)\s*CLP\$$/i;
+    // Bullet attributes worth keeping in the product description
+    const keptAttributes = ['serie', 'color', 'medida', 'superficie'];
+
+    const items = [];
+    let title = [];
+    let attributes = [];
+    let inBlock = false;
+
+    for (const line of lines) {
+        if (/^DESCRIPCI[ÓO]N\b/i.test(line)) {
+            inBlock = true;
+            title = [];
+            attributes = [];
+            continue;
+        }
+        if (!inBlock) continue;
+
+        const priceMatch = line.match(priceRegex);
+        if (priceMatch) {
+            const measure = attributes.find(a => a.key === 'medida');
+            items.push({
+                qty: toNumber(priceMatch[2]) || 1,
+                unit: 'UNIDADES',
+                description: [title.join(' '), ...attributes.map(a => a.value)].filter(Boolean).join(' - ').replace(/\s+/g, ' ').trim() || 'Producto sin descripción',
+                unitPrice: toNumber(priceMatch[3]),
+                total: toNumber(priceMatch[4]),
+                position: priceMatch[1],
+                measures: measure ? measure.value : ''
+            });
+            inBlock = false;
+            continue;
+        }
+
+        const bulletMatch = line.match(/^[⦁•·\-]\s*([^:]+):\s*(.*)$/);
+        if (bulletMatch) {
+            const key = bulletMatch[1].trim().toLowerCase();
+            if (keptAttributes.includes(key)) {
+                // "Cristal 5 mm incoloro 0,773 × 1,986 m (3 u.)" -> "Cristal 5 mm incoloro"
+                const value = key === 'superficie'
+                    ? bulletMatch[2].replace(/\s+[\d,.]+\s*[×x].*$/, '').trim()
+                    : bulletMatch[2].trim();
+                attributes.push({ key, value });
+            }
+            continue;
+        }
+
+        if (attributes.length === 0) {
+            title.push(line);
+        }
+    }
+
+    return {
+        success: true,
+        documentType: 'presupuesto',
+        orderNumber,
+        supplier: customer || 'Desconocido',
+        date,
+        reference: '',
+        shippingAddress: '',
+        items
+    };
+}
+
 async function parsePdf(fileBuffer) {
     let parser;
     try {
         parser = new PDFParse({ data: fileBuffer });
         const data = await parser.getText();
         const text = data.text;
-        
+
         const lines = text.split('\n').map(line => line.trim()).filter(line => line !== '');
-        
+
+        if (/Importe\s*\/\s*Uds/i.test(text) && /Pos:\s*\S+\s+Medidas:/i.test(text)) {
+            return parseQuoteFormat(lines, text);
+        }
+        if (/^Pos\.\s*\d+\s*-/im.test(text) && /UDS:\s*[\d.,]+/i.test(text)) {
+            return parseQuoteFormatPositions(lines, text);
+        }
+        if (/CLP\$/.test(text) && /TIPO\s+UDS\s+VALOR/i.test(text)) {
+            return parseQuoteFormatBullets(lines, text);
+        }
+
         let orderNumber = '';
         let supplier = 'Desconocido';
         let date = '';

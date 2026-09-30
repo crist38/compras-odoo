@@ -3,6 +3,7 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const dotenv = require('dotenv');
 const OdooClient = require('./odoo-client');
 // Note: parseDocx and parsePdf are loaded lazily inside the upload endpoint
@@ -50,6 +51,58 @@ function getOdooClient(req) {
 
     return new OdooClient(odooUrl, odooDb, email, password);
 }
+
+// Parse a PDF/DOCX buffer into structured order data (null if unsupported type)
+async function parseDocumentBuffer(fileName, fileBuffer) {
+    const lowerName = fileName.toLowerCase();
+
+    if (lowerName.endsWith('.docx')) {
+        // Lazy load to avoid crashing serverless on startup
+        const { parseDocx } = require('./docx-parser');
+        // Write to a temporary file for Mammoth/AdmZip
+        const safeName = path.basename(fileName).replace(/[^\w.\-]/g, '_');
+        const tempFilePath = path.join(os.tmpdir(), `temp_${Date.now()}_${safeName}`);
+        fs.writeFileSync(tempFilePath, fileBuffer);
+        try {
+            return parseDocx(tempFilePath);
+        } finally {
+            // Always clean up temp file
+            if (fs.existsSync(tempFilePath)) {
+                fs.unlinkSync(tempFilePath);
+            }
+        }
+    }
+
+    if (lowerName.endsWith('.pdf')) {
+        // Lazy load to avoid crashing serverless on startup
+        const { parsePdf } = require('./pdf-parser');
+        return await parsePdf(fileBuffer);
+    }
+
+    return null;
+}
+
+// Convert a document date (DD/MM/YYYY, DD-MM-YYYY or ISO) to Odoo's 'YYYY-MM-DD HH:MM:SS', null if invalid
+function toOdooDatetime(value) {
+    if (!value) return null;
+    const dmy = String(value).trim().match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/);
+    const date = dmy
+        ? new Date(Date.UTC(parseInt(dmy[3], 10), parseInt(dmy[2], 10) - 1, parseInt(dmy[1], 10), 12))
+        : new Date(value);
+    if (isNaN(date.getTime())) return null;
+    return date.toISOString().replace('T', ' ').substring(0, 19);
+}
+
+// Odoo domain to filter attachments the parsers can read
+const SUPPORTED_ATTACHMENT_DOMAIN = [
+    '|', '|',
+    ['mimetype', 'in', [
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ]],
+    ['name', '=ilike', '%.pdf'],
+    ['name', '=ilike', '%.docx']
+];
 
 // Health check endpoint - useful for diagnosing Vercel deployments
 app.get('/api/health', (req, res) => {
@@ -127,25 +180,9 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 
         console.log(`Received file: ${fileName}, size: ${fileBuffer.length} bytes`);
 
-        if (fileName.endsWith('.docx')) {
-            // Lazy load to avoid crashing serverless on startup
-            const { parseDocx } = require('./docx-parser');
-            // Write to a temporary file for Mammoth/AdmZip
-            const tempFilePath = path.join('/tmp', `temp_${Date.now()}_${fileName}`);
-            fs.writeFileSync(tempFilePath, fileBuffer);
-            try {
-                parsedData = parseDocx(tempFilePath);
-            } finally {
-                // Always clean up temp file
-                if (fs.existsSync(tempFilePath)) {
-                    fs.unlinkSync(tempFilePath);
-                }
-            }
-        } else if (fileName.endsWith('.pdf')) {
-            // Lazy load to avoid crashing serverless on startup
-            const { parsePdf } = require('./pdf-parser');
-            parsedData = await parsePdf(fileBuffer);
-        } else {
+        parsedData = await parseDocumentBuffer(fileName, fileBuffer);
+
+        if (!parsedData) {
             return res.status(400).json({
                 success: false,
                 message: 'Unsupported file type. Only .docx and .pdf files are supported.'
@@ -162,6 +199,128 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         res.json({
             success: true,
             fileName,
+            data: parsedData
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+});
+
+// Endpoint: List won CRM opportunities (by default only those with PDF/DOCX attachments)
+app.post('/api/odoo/crm/leads', async (req, res) => {
+    try {
+        const client = getOdooClient(req);
+        const search = (req.body.search || '').trim();
+        const onlyWithAttachments = req.body.onlyWithAttachments !== false;
+
+        // Only opportunities in a "won" stage are ready to be quoted to suppliers
+        const domain = [['stage_id.is_won', '=', true]];
+        if (search) {
+            domain.push('|', '|', ['name', 'ilike', search], ['partner_id.name', 'ilike', search], ['partner_name', 'ilike', search]);
+        }
+
+        if (onlyWithAttachments) {
+            const leadAttachments = await client.executeKw('ir.attachment', 'search_read', [
+                [['res_model', '=', 'crm.lead'], ...SUPPORTED_ATTACHMENT_DOMAIN]
+            ], {
+                fields: ['res_id'],
+                order: 'id desc',
+                limit: 2000
+            });
+            const leadIdsWithFiles = [...new Set(leadAttachments.map(a => a.res_id).filter(Boolean))];
+            domain.push(['id', 'in', leadIdsWithFiles]);
+        }
+
+        const leads = await client.executeKw('crm.lead', 'search_read', [domain], {
+            fields: ['id', 'name', 'partner_id', 'partner_name', 'stage_id', 'user_id', 'type', 'expected_revenue', 'create_date'],
+            order: 'create_date desc',
+            limit: 50
+        });
+
+        // Fetch the supported files of all listed leads in a single query
+        const leadIds = leads.map(l => l.id);
+        const attachments = leadIds.length === 0 ? [] : await client.executeKw('ir.attachment', 'search_read', [
+            [['res_model', '=', 'crm.lead'], ['res_id', 'in', leadIds], ...SUPPORTED_ATTACHMENT_DOMAIN]
+        ], {
+            fields: ['id', 'name', 'res_id', 'mimetype', 'file_size', 'create_date'],
+            order: 'create_date desc'
+        });
+
+        const result = leads.map(lead => ({
+            id: lead.id,
+            name: lead.name,
+            type: lead.type,
+            partner: lead.partner_id ? lead.partner_id[1] : (lead.partner_name || ''),
+            stage: lead.stage_id ? lead.stage_id[1] : '',
+            salesperson: lead.user_id ? lead.user_id[1] : '',
+            expectedRevenue: lead.expected_revenue,
+            createDate: lead.create_date,
+            attachments: attachments
+                .filter(a => a.res_id === lead.id)
+                .map(a => ({ id: a.id, name: a.name, mimetype: a.mimetype, size: a.file_size }))
+        }));
+
+        res.json({
+            success: true,
+            leads: result
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+});
+
+// Endpoint: Download a CRM attachment from Odoo and parse it
+app.post('/api/odoo/crm/parse-attachment', async (req, res) => {
+    try {
+        const client = getOdooClient(req);
+        const attachmentId = parseInt(req.body.attachmentId, 10);
+
+        if (!attachmentId) {
+            return res.status(400).json({ success: false, message: 'Missing attachmentId.' });
+        }
+
+        const records = await client.executeKw('ir.attachment', 'read', [
+            [attachmentId],
+            ['name', 'datas', 'res_model', 'res_id']
+        ]);
+        const attachment = records && records[0];
+
+        if (!attachment || !attachment.datas) {
+            return res.status(404).json({ success: false, message: 'Adjunto no encontrado o vacío en Odoo.' });
+        }
+        if (attachment.res_model !== 'crm.lead') {
+            return res.status(400).json({ success: false, message: 'El adjunto no pertenece a una oportunidad del CRM.' });
+        }
+
+        const fileBuffer = Buffer.from(attachment.datas, 'base64');
+        console.log(`Parsing CRM attachment: ${attachment.name}, size: ${fileBuffer.length} bytes`);
+
+        const parsedData = await parseDocumentBuffer(attachment.name, fileBuffer);
+
+        if (!parsedData) {
+            return res.status(400).json({
+                success: false,
+                message: 'Tipo de archivo no soportado. Solo se admiten .docx y .pdf.'
+            });
+        }
+        if (!parsedData.success) {
+            return res.status(500).json({
+                success: false,
+                message: `Failed to parse file: ${parsedData.error}`
+            });
+        }
+
+        res.json({
+            success: true,
+            fileName: attachment.name,
+            fileSize: fileBuffer.length,
+            leadId: attachment.res_id,
             data: parsedData
         });
     } catch (error) {
@@ -265,7 +424,7 @@ app.post('/api/odoo/create-products', async (req, res) => {
 app.post('/api/odoo/create-purchase-order', async (req, res) => {
     try {
         const client = getOdooClient(req);
-        const { supplierName, items, orderDate, orderNumber } = req.body;
+        const { supplierName, items, orderDate, orderNumber, leadId, attachmentId } = req.body;
 
         if (!supplierName) {
             return res.status(400).json({ success: false, message: 'Supplier name is required.' });
@@ -286,18 +445,46 @@ app.post('/api/odoo/create-purchase-order', async (req, res) => {
             price_unit: item.priceUnit || 0.0
         }));
 
-        // 3. Create the purchase order in Odoo
+        // 3. If it comes from the CRM, the opportunity name becomes the source document
+        let lead = null;
+        if (leadId) {
+            const leads = await client.executeKw('crm.lead', 'read', [[parseInt(leadId, 10)], ['name']]);
+            lead = leads && leads[0] ? { id: leads[0].id, name: leads[0].name } : null;
+        }
+
+        // 4. Create the purchase order in Odoo
         const result = await client.createPurchaseOrder(
-            partner.id, 
-            poItems, 
-            orderDate ? new Date(orderDate).toISOString().replace('T', ' ').substring(0, 19) : null,
-            orderNumber || null
+            partner.id,
+            poItems,
+            toOdooDatetime(orderDate),
+            orderNumber || null,
+            lead ? lead.name : null
         );
+
+        // 5. Link the purchase order back to the CRM opportunity (non-fatal)
+        const warnings = [];
+        if (lead) {
+            if (attachmentId) {
+                try {
+                    await client.copyAttachment(parseInt(attachmentId, 10), 'purchase.order', result.id);
+                } catch (error) {
+                    warnings.push(`No se pudo copiar el adjunto a la orden: ${error.message}`);
+                }
+            }
+            try {
+                await client.postNote('crm.lead', lead.id, `Cotización de compra ${result.name} creada desde Odoo Compras (proveedor: ${partner.name}).`);
+                await client.postNote('purchase.order', result.id, `Creada desde la oportunidad CRM: ${lead.name}`);
+            } catch (error) {
+                warnings.push(`No se pudo registrar la nota en el chatter: ${error.message}`);
+            }
+        }
 
         res.json({
             success: true,
             purchaseOrder: result,
             partner,
+            lead,
+            warnings,
             message: `Purchase Order ${result.name} successfully created in Odoo.`
         });
     } catch (error) {
