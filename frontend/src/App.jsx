@@ -289,6 +289,9 @@ export default function App() {
     setVerifiedItems([]);
     setPoResult(null);
     addLog(`Procesando adjunto "${attachment.name}" de la oportunidad "${lead.name}"...`, 'info');
+    if (lead.purchaseOrders?.length > 0) {
+      addLog(`Esta oportunidad ya tiene órdenes de compra: ${lead.purchaseOrders.map(po => po.name).join(', ')}. Verifique que no sea un duplicado.`, 'warning');
+    }
 
     try {
       const response = await fetch(`${API_BASE_URL}/odoo/crm/parse-attachment`, {
@@ -510,6 +513,7 @@ export default function App() {
         addLog(`Proveedor asociado: ${dataPo.partner.name} (ID: ${dataPo.partner.id})`, 'info');
         if (dataPo.lead) {
           addLog(`Vinculada a la oportunidad CRM "${dataPo.lead.name}" (documento origen + nota en el chatter).`, 'info');
+          fetchCrmLeads(); // refresh the "already processed" badges
         }
         (dataPo.warnings || []).forEach(w => addLog(w, 'warning'));
         alert(`Orden de compra ${dataPo.purchaseOrder.name} creada correctamente.`);
@@ -783,6 +787,17 @@ export default function App() {
                             <p className="text-[10px] text-slate-500 truncate">
                               {lead.partner || 'Sin cliente'}{lead.stage ? ` · ${lead.stage}` : ''}
                             </p>
+                            {lead.purchaseOrders?.length > 0 && (
+                              <span
+                                className="inline-flex items-center space-x-1 mt-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded-full text-[10px] font-semibold max-w-full"
+                                title={lead.purchaseOrders.map(po => `${po.name} · ${po.partner}`).join('\n')}
+                              >
+                                <Check className="h-3 w-3 flex-shrink-0" />
+                                <span className="truncate">
+                                  Ya procesada: {lead.purchaseOrders.map(po => po.name).join(', ')}
+                                </span>
+                              </span>
+                            )}
                           </div>
                           <span className="flex items-center space-x-0.5 text-[10px] text-slate-400 flex-shrink-0">
                             <Paperclip className="h-3 w-3" />
@@ -792,6 +807,24 @@ export default function App() {
 
                         {isExpanded && (
                           <div className="px-2.5 pb-2.5 space-y-1">
+                            {lead.purchaseOrders?.length > 0 && (
+                              <div className="ml-6 mb-1.5 p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-[10px] text-amber-300 space-y-0.5">
+                                <p className="font-semibold">Órdenes de compra ya generadas:</p>
+                                {lead.purchaseOrders.map(po => (
+                                  <p key={po.id}>
+                                    {odooUrl ? (
+                                      <a
+                                        href={`${odooUrl.replace(/\/$/, '')}/web#id=${po.id}&model=purchase.order&view_type=form`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="underline hover:text-amber-200"
+                                      >{po.name}</a>
+                                    ) : po.name}
+                                    {po.partner ? ` · ${po.partner}` : ''}
+                                  </p>
+                                ))}
+                              </div>
+                            )}
                             {lead.attachments.length === 0 ? (
                               <p className="text-[11px] text-slate-500 pl-6">Sin adjuntos PDF/DOCX.</p>
                             ) : (

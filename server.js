@@ -249,6 +249,15 @@ app.post('/api/odoo/crm/leads', async (req, res) => {
             order: 'create_date desc'
         });
 
+        // Purchase orders already generated from each lead (linked through the source document)
+        const leadNames = [...new Set(leads.map(l => l.name))];
+        const purchaseOrders = leadNames.length === 0 ? [] : await client.executeKw('purchase.order', 'search_read', [
+            [['origin', 'in', leadNames], ['state', '!=', 'cancel']]
+        ], {
+            fields: ['id', 'name', 'origin', 'state', 'partner_id'],
+            order: 'id desc'
+        });
+
         const result = leads.map(lead => ({
             id: lead.id,
             name: lead.name,
@@ -260,7 +269,10 @@ app.post('/api/odoo/crm/leads', async (req, res) => {
             createDate: lead.create_date,
             attachments: attachments
                 .filter(a => a.res_id === lead.id)
-                .map(a => ({ id: a.id, name: a.name, mimetype: a.mimetype, size: a.file_size }))
+                .map(a => ({ id: a.id, name: a.name, mimetype: a.mimetype, size: a.file_size })),
+            purchaseOrders: purchaseOrders
+                .filter(po => po.origin === lead.name)
+                .map(po => ({ id: po.id, name: po.name, state: po.state, partner: po.partner_id ? po.partner_id[1] : '' }))
         }));
 
         res.json({

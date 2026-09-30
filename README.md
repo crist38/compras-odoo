@@ -19,6 +19,7 @@ Construido utilizando **Node.js (Express)** en el backend y **React (Vite + Tail
   - Lista solo las oportunidades del CRM de Odoo en etapa **ganada** (`stage_id.is_won`), con búsqueda por nombre o cliente y filtro opcional de "solo con adjuntos PDF/DOCX".
   - Descarga y procesa el adjunto seleccionado directamente desde Odoo, sin subirlo manualmente.
   - La cotización creada queda vinculada a la oportunidad: nombre de la oportunidad como *Documento origen*, copia del adjunto en la cotización y nota en el chatter de ambos registros.
+  - Las oportunidades que ya tienen órdenes de compra (no canceladas) con su nombre como *Documento origen* se marcan como **"Ya procesada: P000XX"**, con enlace a cada orden, y se muestra un aviso al procesarlas de nuevo para evitar duplicados. Siguen disponibles por si se necesita otra orden (por ejemplo, para otro proveedor).
 * **Integración inteligente con Odoo:**
   - **Identificación de Proveedor:** Identifica el proveedor y lo asocia automáticamente o permite buscar/seleccionar de una lista desplegable conectada a Odoo en tiempo real.
   - **Verificación de Catálogo de Inventario:** Valida de forma automática qué productos de la orden ya existen en Odoo y cuáles son nuevos.
