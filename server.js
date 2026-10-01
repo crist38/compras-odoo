@@ -427,24 +427,26 @@ app.post('/api/odoo/create-products', async (req, res) => {
             return res.status(400).json({ success: false, message: 'Missing products list.' });
         }
 
-        const createdProducts = [];
-
-        for (const prod of products) {
-            // prod should have: name, default_code, standard_price, list_price, type
-            const productId = await client.createProduct({
+        // prod should have: name, default_code, standard_price, list_price, type
+        const createOne = async (prod) => ({
+            temporaryId: prod.temporaryId, // used in frontend to map back
+            id: await client.createProduct({
                 name: prod.name,
                 default_code: prod.default_code || '',
                 standard_price: prod.standard_price || 0.0,
                 list_price: prod.list_price || 0.0,
                 type: prod.type || 'product' // default storable product
-            });
+            }),
+            name: prod.name,
+            default_code: prod.default_code
+        });
 
-            createdProducts.push({
-                temporaryId: prod.temporaryId, // used in frontend to map back
-                id: productId,
-                name: prod.name,
-                default_code: prod.default_code
-            });
+        // The first product is created alone so the client learns which creation strategy
+        // this Odoo version accepts; the rest run in parallel to stay within the serverless time limit.
+        const createdProducts = [];
+        if (products.length > 0) {
+            createdProducts.push(await createOne(products[0]));
+            createdProducts.push(...await Promise.all(products.slice(1).map(createOne)));
         }
 
         res.json({
@@ -537,24 +539,31 @@ app.post('/api/odoo/create-sale-order', async (req, res) => {
 
         // 4. Link the quotation back to the CRM opportunity (non-fatal)
         if (lead) {
-            try {
-                await client.executeKw('crm.lead', 'write', [[lead.id], { tag_ids: [[4, brandTag.id]] }]);
-            } catch (error) {
-                warnings.push(`No se pudo etiquetar la oportunidad con la marca: ${error.message}`);
-            }
-            if (attachmentId) {
+            const attempt = async (action, warning) => {
                 try {
-                    await client.copyAttachment(parseInt(attachmentId, 10), 'sale.order', result.id);
+                    await action();
                 } catch (error) {
-                    warnings.push(`No se pudo copiar el adjunto a la cotización: ${error.message}`);
+                    warnings.push(`${warning}: ${error.message}`);
                 }
-            }
-            try {
-                await client.postNote('crm.lead', lead.id, `Cotización ${result.name} creada desde Odoo Compras (marca de PVC: ${brandTag.name}).`);
-                await client.postNote('sale.order', result.id, `Creada desde la oportunidad CRM: ${lead.name}`);
-            } catch (error) {
-                warnings.push(`No se pudo registrar la nota en el chatter: ${error.message}`);
-            }
+            };
+            // Two independent chains run in parallel (to stay within the serverless time limit);
+            // within each chain, writes to the same record stay sequential to avoid concurrent updates.
+            await Promise.all([
+                (async () => {
+                    await attempt(() => client.executeKw('crm.lead', 'write', [[lead.id], { tag_ids: [[4, brandTag.id]] }]),
+                        'No se pudo etiquetar la oportunidad con la marca');
+                    await attempt(() => client.postNote('crm.lead', lead.id, `Cotización ${result.name} creada desde Odoo Compras (marca de PVC: ${brandTag.name}).`),
+                        'No se pudo registrar la nota en la oportunidad');
+                })(),
+                (async () => {
+                    if (attachmentId) {
+                        await attempt(() => client.copyAttachment(parseInt(attachmentId, 10), 'sale.order', result.id),
+                            'No se pudo copiar el adjunto a la cotización');
+                    }
+                    await attempt(() => client.postNote('sale.order', result.id, `Creada desde la oportunidad CRM: ${lead.name}`),
+                        'No se pudo registrar la nota en la cotización');
+                })()
+            ]);
         }
 
         res.json({

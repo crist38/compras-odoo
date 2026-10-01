@@ -154,45 +154,36 @@ class OdooClient {
             sale_ok: true
         };
 
-        // Strategy A (Odoo 17/18): type='consu' + is_storable=true
-        // In Odoo 17+, 'product' was removed as a type value. Storable products
-        // are now type='consu' with the boolean is_storable=true.
-        try {
-            const productId = await this.executeKw("product.product", "create", [{
-                ...baseFields,
-                type: "consu",
-                is_storable: true
-            }]);
-            console.log(`Product "${productData.name}" created (Strategy A: consu + is_storable) ID: ${productId}`);
-            return productId;
-        } catch (errorA) {
-            console.warn("Strategy A failed:", errorA.message);
+        // Odoo versions differ in how a storable product is declared:
+        //   A (Odoo 17/18): type='consu' + is_storable=true ('product' was removed as a type value)
+        //   B (Odoo 15/16): detailed_type='product'
+        //   C (universal fallback): type='consu' (consumable, no stock tracking)
+        const strategies = [
+            { name: 'A', fields: { type: 'consu', is_storable: true } },
+            { name: 'B', fields: { detailed_type: 'product' } },
+            { name: 'C', fields: { type: 'consu' } }
+        ];
 
-            // Strategy B (Odoo 15/16): detailed_type='product'
+        // Once a strategy has worked, use it directly for the next products (saves failed calls)
+        const ordered = this.productStrategy
+            ? [strategies.find(s => s.name === this.productStrategy), ...strategies.filter(s => s.name !== this.productStrategy)]
+            : strategies;
+
+        let lastError;
+        for (const strategy of ordered) {
             try {
-                const productId = await this.executeKw("product.product", "create", [{
-                    ...baseFields,
-                    detailed_type: "product"
-                }]);
-                console.log(`Product "${productData.name}" created (Strategy B: detailed_type='product') ID: ${productId}`);
+                const productId = await this.executeKw('product.product', 'create', [{ ...baseFields, ...strategy.fields }]);
+                this.productStrategy = strategy.name;
+                console.log(`Product "${productData.name}" created (Strategy ${strategy.name}) ID: ${productId}`);
                 return productId;
-            } catch (errorB) {
-                console.warn("Strategy B failed:", errorB.message);
-
-                // Strategy C (Universal fallback): type='consu' only (consumable, no stock tracking)
-                try {
-                    const productId = await this.executeKw("product.product", "create", [{
-                        ...baseFields,
-                        type: "consu"
-                    }]);
-                    console.log(`Product "${productData.name}" created (Strategy C: consu fallback) ID: ${productId}`);
-                    return productId;
-                } catch (errorC) {
-                    console.error("All product creation strategies failed.");
-                    throw errorC;
-                }
+            } catch (error) {
+                console.warn(`Strategy ${strategy.name} failed:`, error.message);
+                lastError = error;
             }
         }
+
+        console.error('All product creation strategies failed.');
+        throw lastError;
     }
 
     // Helper to create a sales quotation (sale.order in draft state)

@@ -29,6 +29,19 @@ const API_BASE_URL = import.meta.env.DEV
   ? 'http://localhost:5000/api'
   : '/api';
 
+// Parse an API response; non-JSON bodies (e.g. Vercel timeout/error pages) become a readable error
+async function readJson(response, step) {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const reason = response.status === 504 || /timeout/i.test(text)
+      ? 'el servidor tardó demasiado en responder'
+      : 'el servidor devolvió una respuesta inválida';
+    return { success: false, message: `${step}: ${reason} (HTTP ${response.status}). Verifique en Odoo qué se alcanzó a crear antes de reintentar.` };
+  }
+}
+
 export default function App() {
   // Theme State (Default to dark)
   const [theme, setTheme] = useState(() => {
@@ -261,7 +274,7 @@ export default function App() {
         body: formData
       });
 
-      const data = await response.json();
+      const data = await readJson(response, 'Procesar archivo');
       if (data.success) {
         handleParsedOrder(data.data);
       } else {
@@ -300,7 +313,7 @@ export default function App() {
         })
       });
 
-      const data = await response.json();
+      const data = await readJson(response, 'Procesar adjunto');
       if (data.success) {
         handleParsedOrder(data.data, lead);
       } else {
@@ -365,7 +378,7 @@ export default function App() {
         })
       });
 
-      const data = await response.json();
+      const data = await readJson(response, 'Verificar productos');
       if (data.success) {
         // Enriched with form controls for creating products
         const enriched = data.items.map(item => {
@@ -467,7 +480,7 @@ export default function App() {
           })
         });
 
-        const dataCreate = await responseCreate.json();
+        const dataCreate = await readJson(responseCreate, 'Crear productos');
         
         if (dataCreate.success) {
           createdCount = dataCreate.products.length;
@@ -525,7 +538,7 @@ export default function App() {
         })
       });
 
-      const dataSo = await responseSo.json();
+      const dataSo = await readJson(responseSo, 'Crear cotización');
       if (dataSo.success) {
         setSoResult(dataSo);
         addLog(`¡ÉXITO! Cotización ${dataSo.saleOrder.name} creada en Ventas.`, 'success');
