@@ -142,16 +142,17 @@ app.post('/api/odoo/partners', async (req, res) => {
         const client = getOdooClient(req);
         const search = req.body.search || '';
         
-        // Search criteria
-        const domain = [['supplier_rank', '>', 0]];
-        if (search) {
-            domain.push(['name', 'ilike', search]);
-        }
+        // Without search: only vendors. With search: any contact (a PVC brand may exist in
+        // Odoo without being marked as vendor yet), vendors listed first.
+        const domain = search
+            ? [['name', 'ilike', search]]
+            : [['supplier_rank', '>', 0]];
 
         const partners = await client.executeKw('res.partner', 'search_read', [
             domain
         ], {
-            fields: ['id', 'name', 'email', 'phone', 'vat'],
+            fields: ['id', 'name', 'email', 'phone', 'vat', 'supplier_rank'],
+            order: 'supplier_rank desc, name asc',
             limit: 100
         });
 

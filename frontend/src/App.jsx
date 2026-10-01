@@ -1070,9 +1070,27 @@ export default function App() {
                             : orderData.documentType === 'presupuesto' ? '-- Seleccione la marca --' : '-- Autocreación o búsqueda automática --'}
                         </option>
                         {odooPartners.map(p => (
-                          <option key={p.id} value={p.id}>{p.name}</option>
+                          <option key={p.id} value={p.id}>{p.name}{p.supplier_rank > 0 ? '' : ' (contacto, no proveedor)'}</option>
                         ))}
                       </select>
+
+                      {/* Brand typed in the search box that doesn't exist in Odoo yet */}
+                      {partnerSearch.trim() &&
+                        !odooPartners.some(p => p.name.trim().toLowerCase() === partnerSearch.trim().toLowerCase()) &&
+                        (orderData.supplier || '').toLowerCase() !== partnerSearch.trim().toLowerCase() && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedPartnerId('');
+                            setOrderData({...orderData, supplier: partnerSearch.trim().toUpperCase()});
+                            addLog(`Marca de PVC "${partnerSearch.trim().toUpperCase()}" seleccionada; se creará en Odoo al importar.`, 'info');
+                          }}
+                          className="mt-1.5 w-full flex items-center justify-center space-x-1.5 bg-slate-900 hover:bg-slate-800 border border-dashed border-purple-500/50 text-purple-300 text-xs font-semibold py-1.5 rounded-lg transition-colors"
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          <span>Usar «{partnerSearch.trim().toUpperCase()}» como marca nueva</span>
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 flex items-center space-x-2 text-amber-400 text-xs">
@@ -1172,6 +1190,11 @@ export default function App() {
                       <span>
                         Esta oportunidad ya tiene la orden {selectedLeadOrders.map(po => po.name).join(', ')}. Solo se permite una orden por oportunidad; cancélela en Odoo para generar otra.
                       </span>
+                    </div>
+                  ) : !orderData.supplier ? (
+                    <div className="text-xs text-amber-400 flex items-center space-x-1.5">
+                      <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                      <span>Seleccione la marca de PVC (arriba) para habilitar la importación. Si no existe en Odoo, escríbala en el buscador y use «como marca nueva».</span>
                     </div>
                   ) : (
                     <div className="text-xs text-slate-400">
