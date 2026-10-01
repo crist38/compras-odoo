@@ -59,10 +59,9 @@ export default function App() {
   const [odooUrl, setOdooUrl] = useState('');
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
 
-  // Partners state
-  const [odooPartners, setOdooPartners] = useState([]);
-  const [selectedPartnerId, setSelectedPartnerId] = useState('');
-  const [partnerSearch, setPartnerSearch] = useState('');
+  // PVC brands (Odoo CRM/sales tags)
+  const [odooBrands, setOdooBrands] = useState([]);
+  const [brandSearch, setBrandSearch] = useState('');
 
   // File Upload State
   const [dragActive, setDragActive] = useState(false);
@@ -86,7 +85,7 @@ export default function App() {
   const [isVerifying, setIsVerifying] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [verifiedItems, setVerifiedItems] = useState([]);
-  const [poResult, setPoResult] = useState(null);
+  const [soResult, setSoResult] = useState(null);
 
   // App logs
   const [logs, setLogs] = useState([]);
@@ -135,7 +134,6 @@ export default function App() {
         setConnectionStatus('connected');
         setIsLoggedIn(true);
         addLog(`Conectado a Odoo correctamente. UID: ${data.uid}`, 'success');
-        fetchPartners();
       } else {
         setConnectionStatus('error');
         setLoginError(data.message || 'Correo o contraseña incorrectos.');
@@ -146,23 +144,22 @@ export default function App() {
     }
   };
 
-  const fetchPartners = async () => {
+  const fetchBrands = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/odoo/partners`, {
+      const response = await fetch(`${API_BASE_URL}/odoo/brands`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           odooCredentials: getOdooCredentialsObj(),
-          search: partnerSearch
+          search: brandSearch
         })
       });
       const data = await response.json();
       if (data.success) {
-        setOdooPartners(data.partners);
-        addLog(`Cargados ${data.partners.length} proveedores desde Odoo.`, 'info');
+        setOdooBrands(data.brands);
       }
     } catch (error) {
-      console.error('Error fetching partners:', error);
+      console.error('Error fetching brands:', error);
     }
   };
 
@@ -170,21 +167,11 @@ export default function App() {
   useEffect(() => {
     if (connectionStatus === 'connected') {
       const delayDebounce = setTimeout(() => {
-        fetchPartners();
+        fetchBrands();
       }, 500);
       return () => clearTimeout(delayDebounce);
     }
-  }, [partnerSearch, connectionStatus]);
-
-  // Preselect the Odoo partner whose name matches the detected PVC brand exactly
-  useEffect(() => {
-    if (!orderData?.brand || selectedPartnerId) return;
-    const match = odooPartners.find(p => p.name.trim().toLowerCase() === orderData.brand.toLowerCase());
-    if (match) {
-      setSelectedPartnerId(String(match.id));
-      setOrderData(prev => ({ ...prev, supplier: match.name }));
-    }
-  }, [odooPartners, orderData?.brand]);
+  }, [brandSearch, connectionStatus]);
 
   const fetchCrmLeads = async () => {
     setIsLoadingLeads(true);
@@ -262,7 +249,7 @@ export default function App() {
     setIsParsing(true);
     setOrderData(null);
     setVerifiedItems([]);
-    setPoResult(null);
+    setSoResult(null);
     addLog(`Procesando archivo: ${selectedFile.name}...`, 'info');
 
     const formData = new FormData();
@@ -297,10 +284,10 @@ export default function App() {
     setIsParsing(true);
     setOrderData(null);
     setVerifiedItems([]);
-    setPoResult(null);
+    setSoResult(null);
     addLog(`Procesando adjunto "${attachment.name}" de la oportunidad "${lead.name}"...`, 'info');
-    if (lead.purchaseOrders?.length > 0) {
-      addLog(`Esta oportunidad ya tiene órdenes de compra: ${lead.purchaseOrders.map(po => po.name).join(', ')}. Solo se permite una orden por oportunidad: no podrá importarse.`, 'warning');
+    if (lead.quotations?.length > 0) {
+      addLog(`Esta oportunidad ya tiene la cotización ${lead.quotations.map(so => so.name).join(', ')}. Solo se permite una cotización por oportunidad: no podrá importarse.`, 'warning');
     }
 
     try {
@@ -315,7 +302,7 @@ export default function App() {
 
       const data = await response.json();
       if (data.success) {
-        handleParsedOrder(data.data);
+        handleParsedOrder(data.data, lead);
       } else {
         addLog(`Error al parsear el adjunto: ${data.message}`, 'error');
         setFile(null);
@@ -330,16 +317,14 @@ export default function App() {
     }
   };
 
-  const handleParsedOrder = (order) => {
-    setOrderData(order);
-    setSelectedPartnerId(''); // the partner picked for a previous document must not carry over
-    setPartnerSearch(order.brand || ''); // look up the detected brand so it can be preselected
-    addLog(order.documentType === 'presupuesto'
-      ? `Presupuesto leído con éxito. Cliente: ${order.customer || 'S/N'}, N°: ${order.orderNumber || 'S/N'}, Marca de PVC: ${order.brand || 'no detectada (selecciónela)'}.`
-      : `Archivo parsed con éxito. Marca/Proveedor: ${order.supplier}, N° Orden: ${order.orderNumber || 'S/N'}`, 'success');
+  const handleParsedOrder = (order, lead = null) => {
+    // Customer: the opportunity's customer wins over the name read from the document
+    const customer = (lead?.partner || order.customer || lead?.name || '').trim();
+    setOrderData({ ...order, brand: order.brand || '', customer });
+    setBrandSearch('');
+    addLog(`Documento leído con éxito. Cliente: ${customer || 'S/N'}, N°: ${order.orderNumber || 'S/N'}, Marca de PVC: ${order.brand || 'no detectada (selecciónela)'}.`, 'success');
     addLog(`Encontrados ${order.items?.length || 0} productos en el documento.`, 'info');
 
-    // Automatically match vendor name if found in Odoo partners list
     if (connectionStatus === 'connected') {
       verifyProductsInOdoo(order.items);
     } else {
@@ -348,8 +333,8 @@ export default function App() {
         ...item,
         exists: false,
         odooProduct: null,
-        standard_price: item.unitPrice || 0,
-        list_price: 0,
+        standard_price: 0,
+        list_price: item.unitPrice || 0,
         default_code: '',
         type: 'product',
         createInOdoo: true
@@ -397,8 +382,8 @@ export default function App() {
           return {
             ...item,
             default_code: item.odooProduct?.default_code || generatedCode,
-            standard_price: item.unitPrice || item.odooProduct?.standard_price || 0.0, // prefer the price in the document
-            list_price: item.odooProduct?.list_price || 0.0,
+            standard_price: item.odooProduct?.standard_price || 0.0,
+            list_price: item.unitPrice || item.odooProduct?.list_price || 0.0, // sale price: prefer the price in the document
             type: item.odooProduct?.type || 'product', // product = storable
             createInOdoo: !item.exists // Auto-check if doesn't exist
           };
@@ -427,24 +412,29 @@ export default function App() {
     setVerifiedItems(updated);
   };
 
-  // Orders already generated for the opportunity being processed (only one is allowed)
-  const selectedLeadOrders = selectedLead
-    ? (crmLeads.find(l => l.id === selectedLead.id)?.purchaseOrders || selectedLead.purchaseOrders || [])
+  // Quotations already generated for the opportunity being processed (only one is allowed)
+  const selectedLeadQuotations = selectedLead
+    ? (crmLeads.find(l => l.id === selectedLead.id)?.quotations || selectedLead.quotations || [])
     : [];
 
-  const importPurchaseOrder = async () => {
+  // Reason why the quotation can't be created yet (null when ready)
+  const importBlocker = !orderData ? null
+    : selectedLeadQuotations.length > 0 && !soResult
+      ? `Esta oportunidad ya tiene la cotización ${selectedLeadQuotations.map(so => so.name).join(', ')}. Solo se permite una por oportunidad; cancélela en Odoo para generar otra.`
+      : !orderData.customer?.trim()
+        ? 'Indique el cliente (arriba) para habilitar la creación de la cotización.'
+        : !orderData.brand?.trim()
+          ? 'Seleccione la marca de PVC (arriba) para habilitar la creación. Si no existe en Odoo, escríbala en el buscador y use «como marca nueva».'
+          : null;
+
+  const importSaleOrder = async () => {
     if (connectionStatus !== 'connected') {
-      addLog('Por favor conéctese a Odoo antes de importar la orden.', 'error');
+      addLog('Por favor conéctese a Odoo antes de crear la cotización.', 'error');
       alert('Debe conectarse a Odoo primero.');
       return;
     }
-    if (!orderData.supplier) {
-      addLog('Seleccione la marca de PVC antes de importar la orden.', 'error');
-      alert('Debe seleccionar la marca de PVC.');
-      return;
-    }
-    if (selectedLeadOrders.length > 0) {
-      addLog(`La oportunidad ya tiene la orden ${selectedLeadOrders.map(po => po.name).join(', ')}. Solo se permite una orden por oportunidad.`, 'error');
+    if (importBlocker) {
+      addLog(importBlocker, 'error');
       return;
     }
 
@@ -494,7 +484,7 @@ export default function App() {
       }
 
       // Map verified products IDs
-      const finalPoLines = verifiedItems.map(item => {
+      const finalLines = verifiedItems.map(item => {
         let productId = null;
         if (item.exists) {
           productId = item.odooProduct.id;
@@ -509,24 +499,25 @@ export default function App() {
         return {
           productId,
           qty: item.qty,
-          priceUnit: item.standard_price || 0.0, // Purchase price is standard_price / cost
+          priceUnit: item.list_price || 0.0, // sale price
           description: item.description
         };
       }).filter(line => line.productId !== null);
 
-      if (finalPoLines.length === 0) {
-        throw new Error('No hay productos válidos asociados para crear la orden de compra.');
+      if (finalLines.length === 0) {
+        throw new Error('No hay productos válidos asociados para crear la cotización.');
       }
 
-      // 2. Create the Purchase Order
-      addLog(`Creando Orden de Compra en Odoo para la marca de PVC "${orderData.supplier}"...`, 'info');
-      const responsePo = await fetch(`${API_BASE_URL}/odoo/create-purchase-order`, {
+      // 2. Create the Sales Quotation
+      addLog(`Creando cotización de venta para "${orderData.customer}" (marca de PVC: ${orderData.brand})...`, 'info');
+      const responseSo = await fetch(`${API_BASE_URL}/odoo/create-sale-order`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           odooCredentials: getOdooCredentialsObj(),
-          supplierName: orderData.supplier,
-          items: finalPoLines,
+          customerName: orderData.customer,
+          brandName: orderData.brand,
+          items: finalLines,
           orderDate: orderData.date,
           orderNumber: orderData.orderNumber,
           leadId: selectedLead?.id || null,
@@ -534,19 +525,20 @@ export default function App() {
         })
       });
 
-      const dataPo = await responsePo.json();
-      if (dataPo.success) {
-        setPoResult(dataPo);
-        addLog(`¡ÉXITO! Orden de compra ${dataPo.purchaseOrder.name} registrada en Odoo.`, 'success');
-        addLog(`Marca de PVC asociada: ${dataPo.partner.name} (ID: ${dataPo.partner.id})`, 'info');
-        if (dataPo.lead) {
-          addLog(`Vinculada a la oportunidad CRM "${dataPo.lead.name}" (documento origen + nota en el chatter).`, 'info');
+      const dataSo = await responseSo.json();
+      if (dataSo.success) {
+        setSoResult(dataSo);
+        addLog(`¡ÉXITO! Cotización ${dataSo.saleOrder.name} creada en Ventas.`, 'success');
+        addLog(`Cliente: ${dataSo.customer.name} · Marca de PVC (etiqueta): ${dataSo.brand.name}`, 'info');
+        if (dataSo.lead) {
+          addLog(`Vinculada a la oportunidad CRM "${dataSo.lead.name}".`, 'info');
           fetchCrmLeads(); // refresh the "already processed" badges
         }
-        (dataPo.warnings || []).forEach(w => addLog(w, 'warning'));
-        alert(`Orden de compra ${dataPo.purchaseOrder.name} creada correctamente.`);
+        fetchBrands();
+        (dataSo.warnings || []).forEach(w => addLog(w, 'warning'));
+        alert(`Cotización ${dataSo.saleOrder.name} creada correctamente.`);
       } else {
-        throw new Error(dataPo.message);
+        throw new Error(dataSo.message);
       }
 
     } catch (error) {
@@ -562,7 +554,7 @@ export default function App() {
     setConnectionStatus('disconnected');
     setOrderData(null);
     setVerifiedItems([]);
-    setPoResult(null);
+    setSoResult(null);
     setFile(null);
     setCrmLeads([]);
     setSelectedLead(null);
@@ -815,14 +807,14 @@ export default function App() {
                             <p className="text-[10px] text-slate-500 truncate">
                               {lead.partner || 'Sin cliente'}{lead.stage ? ` · ${lead.stage}` : ''}
                             </p>
-                            {lead.purchaseOrders?.length > 0 && (
+                            {lead.quotations?.length > 0 && (
                               <span
                                 className="inline-flex items-center space-x-1 mt-1 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-1.5 py-0.5 rounded-full text-[10px] font-semibold max-w-full"
-                                title={lead.purchaseOrders.map(po => `${po.name} · ${po.partner}`).join('\n')}
+                                title={lead.quotations.map(po => `${po.name} · ${po.partner}`).join('\n')}
                               >
                                 <Check className="h-3 w-3 flex-shrink-0" />
                                 <span className="truncate">
-                                  Ya procesada: {lead.purchaseOrders.map(po => po.name).join(', ')}
+                                  Ya procesada: {lead.quotations.map(po => po.name).join(', ')}
                                 </span>
                               </span>
                             )}
@@ -835,14 +827,14 @@ export default function App() {
 
                         {isExpanded && (
                           <div className="px-2.5 pb-2.5 space-y-1">
-                            {lead.purchaseOrders?.length > 0 && (
+                            {lead.quotations?.length > 0 && (
                               <div className="ml-6 mb-1.5 p-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-[10px] text-amber-300 space-y-0.5">
-                                <p className="font-semibold">Órdenes de compra ya generadas:</p>
-                                {lead.purchaseOrders.map(po => (
+                                <p className="font-semibold">Cotización ya generada:</p>
+                                {lead.quotations.map(po => (
                                   <p key={po.id}>
                                     {odooUrl ? (
                                       <a
-                                        href={`${odooUrl.replace(/\/$/, '')}/web#id=${po.id}&model=purchase.order&view_type=form`}
+                                        href={`${odooUrl.replace(/\/$/, '')}/web#id=${po.id}&model=sale.order&view_type=form`}
                                         target="_blank"
                                         rel="noreferrer"
                                         className="underline hover:text-amber-200"
@@ -893,7 +885,7 @@ export default function App() {
             >
               <UploadCloud className="h-10 w-10 text-slate-500 mb-3 animate-pulse-subtle" />
               <p className="text-sm font-medium text-slate-300 text-center">
-                Arrastre y suelte su orden de compra aquí
+                Arrastre y suelte el presupuesto u orden aquí
               </p>
               <p className="text-xs text-slate-500 mt-1 text-center">
                 Formatos soportados: PDF o Word (.docx)
@@ -1005,99 +997,104 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* PVC brand (purchase order partner) */}
-                <div className="mt-6 p-4 bg-slate-950/40 border border-slate-800/80 rounded-xl grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+                {/* Customer and PVC brand (sales tag) */}
+                <div className="mt-6 p-4 bg-slate-950/40 border border-slate-800/80 rounded-xl grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <div className="flex items-center space-x-2">
-                      <h4 className="text-sm font-bold text-slate-300">Marca de PVC:</h4>
-                      {orderData.supplier ? (
-                        <span className="bg-purple-900/40 text-purple-300 text-xs px-2 py-0.5 rounded-full border border-purple-800/40 font-semibold">{orderData.supplier}</span>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                      Cliente {orderData.customer?.trim() ? '' : '(Obligatorio)'}
+                    </label>
+                    {selectedLead?.partner ? (
+                      <>
+                        <p className="w-full bg-slate-950/60 border border-slate-800/80 rounded-lg px-3 py-2 text-sm font-semibold text-white">{selectedLead.partner}</p>
+                        <p className="text-xs text-slate-500 mt-1">Cliente de la oportunidad del CRM.</p>
+                      </>
+                    ) : (
+                      <>
+                        <input
+                          type="text"
+                          value={orderData.customer || ''}
+                          onChange={(e) => setOrderData({...orderData, customer: e.target.value})}
+                          placeholder="Nombre del cliente"
+                          className={`w-full bg-slate-950/60 border rounded-lg px-3 py-2 text-sm font-semibold text-white focus:outline-none focus:border-purple-500 ${
+                            orderData.customer?.trim() ? 'border-slate-800/80' : 'border-amber-500/60'
+                          }`}
+                        />
+                        <p className="text-xs text-slate-500 mt-1">
+                          Se busca en Odoo por nombre exacto; si no existe se crea una sola vez{selectedLead ? ' y se asigna a la oportunidad' : ''}.
+                        </p>
+                      </>
+                    )}
+                  </div>
+
+                  <div>
+                    <div className="flex items-center space-x-2 mb-1">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                        Marca de PVC (etiqueta) {orderData.brand?.trim() ? '' : '(Obligatorio)'}
+                      </label>
+                      {orderData.brand ? (
+                        <span className="bg-purple-900/40 text-purple-300 text-xs px-2 py-0.5 rounded-full border border-purple-800/40 font-semibold">{orderData.brand}</span>
                       ) : (
                         <span className="bg-amber-500/10 text-amber-400 text-xs px-2 py-0.5 rounded-full border border-amber-500/20 font-semibold">Sin identificar</span>
                       )}
                     </div>
-                    {orderData.brand && (
-                      <p className="text-xs text-slate-400 mt-1">
-                        Detectada en el documento: <span className="font-semibold text-slate-300">{orderData.brand}</span>
-                      </p>
-                    )}
-                    {orderData.customer && (
-                      <p className="text-xs text-slate-400 mt-1">
-                        Cliente del presupuesto: <span className="font-semibold text-slate-300">{orderData.customer}</span>
-                      </p>
-                    )}
-                    <p className="text-xs text-slate-500 mt-1">
-                      {orderData.supplier
-                        ? 'Si la marca no existe en Odoo, se creará una sola vez como proveedor y se reutilizará en las siguientes órdenes.'
-                        : 'No se encontró la marca en el documento. Selecciónela antes de importar.'}
-                    </p>
-                  </div>
 
-                  {connectionStatus === 'connected' ? (
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                        Marca de PVC en Odoo {orderData.supplier ? '' : '(Obligatorio)'}
-                      </label>
-                      <div className="relative mb-1.5">
-                        <Search className="h-3.5 w-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
-                        <input
-                          type="text"
-                          value={partnerSearch}
-                          onChange={(e) => setPartnerSearch(e.target.value)}
-                          placeholder="Buscar marca..."
-                          className="w-full bg-slate-950/80 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white focus:outline-none focus:border-purple-500"
-                        />
-                      </div>
-                      <select
-                        className={`w-full bg-slate-950/80 border rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500 ${
-                          orderData.supplier ? 'border-slate-800' : 'border-amber-500/60'
-                        }`}
-                        value={selectedPartnerId}
-                        onChange={(e) => {
-                          setSelectedPartnerId(e.target.value);
-                          if (e.target.value) {
-                            const name = odooPartners.find(p => p.id === parseInt(e.target.value))?.name;
-                            if (name) setOrderData({...orderData, supplier: name});
-                          } else {
-                            // Back to what the document says (empty if nothing was detected)
-                            setOrderData({...orderData, supplier: orderData.brand ?? orderData.supplier ?? ''});
-                          }
-                        }}
-                      >
-                        <option value="">
-                          {orderData.brand
-                            ? `-- Usar marca detectada: ${orderData.brand} --`
-                            : orderData.documentType === 'presupuesto' ? '-- Seleccione la marca --' : '-- Autocreación o búsqueda automática --'}
-                        </option>
-                        {odooPartners.map(p => (
-                          <option key={p.id} value={p.id}>{p.name}{p.supplier_rank > 0 ? '' : ' (contacto, no proveedor)'}</option>
-                        ))}
-                      </select>
-
-                      {/* Brand typed in the search box that doesn't exist in Odoo yet */}
-                      {partnerSearch.trim() &&
-                        !odooPartners.some(p => p.name.trim().toLowerCase() === partnerSearch.trim().toLowerCase()) &&
-                        (orderData.supplier || '').toLowerCase() !== partnerSearch.trim().toLowerCase() && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setSelectedPartnerId('');
-                            setOrderData({...orderData, supplier: partnerSearch.trim().toUpperCase()});
-                            addLog(`Marca de PVC "${partnerSearch.trim().toUpperCase()}" seleccionada; se creará en Odoo al importar.`, 'info');
+                    {connectionStatus === 'connected' ? (
+                      <>
+                        <div className="relative mb-1.5">
+                          <Search className="h-3.5 w-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                          <input
+                            type="text"
+                            value={brandSearch}
+                            onChange={(e) => setBrandSearch(e.target.value)}
+                            placeholder="Buscar marca..."
+                            className="w-full bg-slate-950/80 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white focus:outline-none focus:border-purple-500"
+                          />
+                        </div>
+                        <select
+                          className={`w-full bg-slate-950/80 border rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-purple-500 ${
+                            orderData.brand ? 'border-slate-800' : 'border-amber-500/60'
+                          }`}
+                          value={odooBrands.find(b => b.name.toLowerCase() === (orderData.brand || '').toLowerCase())?.id || ''}
+                          onChange={(e) => {
+                            const brand = odooBrands.find(b => b.id === parseInt(e.target.value));
+                            setOrderData({...orderData, brand: brand ? brand.name : ''});
                           }}
-                          className="mt-1.5 w-full flex items-center justify-center space-x-1.5 bg-slate-900 hover:bg-slate-800 border border-dashed border-purple-500/50 text-purple-300 text-xs font-semibold py-1.5 rounded-lg transition-colors"
                         >
-                          <Plus className="h-3.5 w-3.5" />
-                          <span>Usar «{partnerSearch.trim().toUpperCase()}» como marca nueva</span>
-                        </button>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 flex items-center space-x-2 text-amber-400 text-xs">
-                      <AlertTriangle className="h-4 w-4 flex-shrink-0" />
-                      <span>Conéctese a Odoo para buscar las marcas de PVC existentes en su base de datos.</span>
-                    </div>
-                  )}
+                          <option value="">
+                            {orderData.brand ? `-- ${orderData.brand} --` : '-- Seleccione la marca --'}
+                          </option>
+                          {odooBrands.map(b => (
+                            <option key={b.id} value={b.id}>{b.name}</option>
+                          ))}
+                        </select>
+
+                        {/* Brand typed in the search box that doesn't exist in Odoo yet */}
+                        {brandSearch.trim() &&
+                          !odooBrands.some(b => b.name.trim().toLowerCase() === brandSearch.trim().toLowerCase()) &&
+                          (orderData.brand || '').toLowerCase() !== brandSearch.trim().toLowerCase() && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOrderData({...orderData, brand: brandSearch.trim().toUpperCase()});
+                              addLog(`Marca de PVC "${brandSearch.trim().toUpperCase()}" seleccionada; se creará como etiqueta en Odoo.`, 'info');
+                            }}
+                            className="mt-1.5 w-full flex items-center justify-center space-x-1.5 bg-slate-900 hover:bg-slate-800 border border-dashed border-purple-500/50 text-purple-300 text-xs font-semibold py-1.5 rounded-lg transition-colors"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            <span>Usar «{brandSearch.trim().toUpperCase()}» como marca nueva</span>
+                          </button>
+                        )}
+                        <p className="text-xs text-slate-500 mt-1">
+                          Queda como etiqueta en la cotización y en la oportunidad (una sola etiqueta por marca).
+                        </p>
+                      </>
+                    ) : (
+                      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3 flex items-center space-x-2 text-amber-400 text-xs">
+                        <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+                        <span>Conéctese a Odoo para buscar las marcas de PVC existentes.</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </section>
 
@@ -1119,7 +1116,7 @@ export default function App() {
                         <th className="py-2 px-3">Descripción / Producto</th>
                         <th className="py-2 px-3">Estado Odoo</th>
                         <th className="py-2 px-3">Código/SKU Odoo</th>
-                        <th className="py-2 px-3">Precio Costo ($)</th>
+                        <th className="py-2 px-3">Precio Venta ($)</th>
                         <th className="py-2 px-3 text-center">Crear</th>
                       </tr>
                     </thead>
@@ -1159,10 +1156,9 @@ export default function App() {
                           <td className="py-3 px-3">
                             <input 
                               type="number" 
-                              value={item.standard_price} 
-                              disabled={item.exists}
+                              value={item.list_price}
                               step="any"
-                              onChange={(e) => handleItemFieldChange(idx, 'standard_price', parseFloat(e.target.value) || 0)}
+                              onChange={(e) => handleItemFieldChange(idx, 'list_price', parseFloat(e.target.value) || 0)}
                               placeholder="0.00"
                               className="bg-slate-950/80 border border-slate-800 rounded-md px-2 py-1 text-slate-200 focus:outline-none focus:border-purple-500 disabled:opacity-50 w-20 text-[11px]"
                             />
@@ -1183,39 +1179,31 @@ export default function App() {
                 </div>
 
                 {/* Import Buttons */}
-                <div className="mt-6 flex items-center justify-between border-t border-slate-800 pt-4">
-                  {selectedLeadOrders.length > 0 && !poResult ? (
+                <div className="mt-6 flex items-center justify-between gap-4 border-t border-slate-800 pt-4">
+                  {importBlocker ? (
                     <div className="text-xs text-amber-400 flex items-center space-x-1.5">
                       <AlertTriangle className="h-4 w-4 flex-shrink-0" />
-                      <span>
-                        Esta oportunidad ya tiene la orden {selectedLeadOrders.map(po => po.name).join(', ')}. Solo se permite una orden por oportunidad; cancélela en Odoo para generar otra.
-                      </span>
-                    </div>
-                  ) : !orderData.supplier ? (
-                    <div className="text-xs text-amber-400 flex items-center space-x-1.5">
-                      <AlertTriangle className="h-4 w-4 flex-shrink-0" />
-                      <span>Seleccione la marca de PVC (arriba) para habilitar la importación. Si no existe en Odoo, escríbala en el buscador y use «como marca nueva».</span>
+                      <span>{importBlocker}</span>
                     </div>
                   ) : (
                     <div className="text-xs text-slate-400">
-                      {verifiedItems.filter(i => !i.exists && i.createInOdoo).length} productos nuevos serán creados en el inventario.
+                      {verifiedItems.filter(i => !i.exists && i.createInOdoo).length} productos nuevos serán creados en el catálogo.
                     </div>
                   )}
 
                   <button
-                    onClick={importPurchaseOrder}
-                    disabled={isSyncing || !orderData.supplier || selectedLeadOrders.length > 0}
-                    title={!orderData.supplier ? 'Seleccione la marca de PVC primero' : selectedLeadOrders.length > 0 ? 'La oportunidad ya tiene una orden de compra' : undefined}
-                    className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold py-2 px-6 rounded-xl text-sm transition-all transform active:scale-95 flex items-center justify-center space-x-2 disabled:opacity-50 disabled:pointer-events-none shadow-lg shadow-emerald-950/30"
+                    onClick={importSaleOrder}
+                    disabled={isSyncing || !!importBlocker}
+                    className="flex-shrink-0 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold py-2 px-6 rounded-xl text-sm transition-all transform active:scale-95 flex items-center justify-center space-x-2 disabled:opacity-50 disabled:pointer-events-none shadow-lg shadow-emerald-950/30"
                   >
                     {isSyncing ? (
                       <>
                         <Loader2 className="animate-spin h-4 w-4" />
-                        <span>Sincronizando con Odoo...</span>
+                        <span>Creando cotización...</span>
                       </>
                     ) : (
                       <>
-                        <span>Importar Orden a Odoo</span>
+                        <span>Crear Cotización en Ventas</span>
                         <ArrowRight className="h-4 w-4" />
                       </>
                     )}
@@ -1224,44 +1212,44 @@ export default function App() {
               </section>
 
               {/* Sync Result Success Screen */}
-              {poResult && (
+              {soResult && (
                 <section className="bg-emerald-950/30 border border-emerald-500/20 rounded-2xl p-6 shadow-xl">
                   <div className="flex items-center space-x-3 mb-3 text-emerald-400">
                     <CheckCircle2 className="h-6 w-6 flex-shrink-0" />
-                    <h3 className="text-lg font-bold text-white">¡Orden Sincronizada con Éxito!</h3>
+                    <h3 className="text-lg font-bold text-white">¡Cotización creada con éxito!</h3>
                   </div>
                   <p className="text-sm text-slate-300">
-                    La orden de compra ha sido creada en Odoo en estado borrador.
+                    La cotización ha sido creada en el módulo de Ventas de Odoo en estado borrador.
                   </p>
-                  
+
                   <div className="mt-4 grid grid-cols-2 gap-4 max-w-md bg-slate-950/60 p-4 border border-slate-850 rounded-xl text-xs">
                     <div>
-                      <p className="text-slate-500">ID en base de datos:</p>
-                      <p className="font-mono text-slate-300 font-semibold">{poResult.purchaseOrder.id}</p>
+                      <p className="text-slate-500">Cotización:</p>
+                      <p className="font-mono text-emerald-400 font-bold">{soResult.saleOrder.name}</p>
                     </div>
                     <div>
-                      <p className="text-slate-500">Referencia de Odoo:</p>
-                      <p className="font-mono text-emerald-400 font-bold">{poResult.purchaseOrder.name}</p>
+                      <p className="text-slate-500">Cliente:</p>
+                      <p className="font-semibold text-slate-300">{soResult.customer.name}</p>
                     </div>
                     <div>
-                      <p className="text-slate-500">Marca de PVC:</p>
-                      <p className="font-semibold text-slate-300">{poResult.partner.name}</p>
+                      <p className="text-slate-500">Marca de PVC (etiqueta):</p>
+                      <p className="font-semibold text-slate-300">{soResult.brand.name}</p>
                     </div>
                     <div>
                       <p className="text-slate-500">Número original doc:</p>
                       <p className="font-semibold text-slate-300">{orderData.orderNumber || 'S/N'}</p>
                     </div>
-                    {poResult.lead && (
+                    {soResult.lead && (
                       <div className="col-span-2">
                         <p className="text-slate-500">Oportunidad CRM vinculada:</p>
-                        <p className="font-semibold text-purple-400">{poResult.lead.name}</p>
+                        <p className="font-semibold text-purple-400">{soResult.lead.name}</p>
                       </div>
                     )}
                   </div>
 
                   {odooUrl && (
                     <a
-                      href={`${odooUrl.replace(/\/$/, '')}/web#id=${poResult.purchaseOrder.id}&model=purchase.order&view_type=form`}
+                      href={`${odooUrl.replace(/\/$/, '')}/web#id=${soResult.saleOrder.id}&model=sale.order&view_type=form`}
                       target="_blank"
                       rel="noreferrer"
                       className="inline-flex items-center space-x-1.5 mt-4 text-xs font-semibold text-emerald-400 hover:text-emerald-300"
@@ -1279,7 +1267,7 @@ export default function App() {
               <FileText className="h-16 w-16 text-slate-700 mb-4 animate-float" />
               <h3 className="text-lg font-bold text-white">Ningún documento seleccionado</h3>
               <p className="text-sm text-slate-400 max-w-sm mt-2">
-                Seleccione un adjunto de una oportunidad del CRM, o suba una orden de compra en PDF o Word (.docx), para extraer automáticamente su contenido y procesarlo.
+                Seleccione un adjunto de una oportunidad del CRM, o suba un presupuesto u orden en PDF o Word (.docx), para extraer automáticamente su contenido y procesarlo.
               </p>
             </div>
           )}

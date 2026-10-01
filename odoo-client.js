@@ -83,47 +83,48 @@ class OdooClient {
         ]);
     }
 
-    // Helper to find or create a vendor
-    async findOrCreatePartner(name) {
-        console.log(`Searching for partner: "${name}"`);
-        // Exact name (case-insensitive) first, so a brand like "ASPEN" doesn't match "Aspen Construcciones"
-        for (const operator of ["=ilike", "ilike"]) {
-            const partners = await this.executeKw("res.partner", "search_read", [
-                [["name", operator, name], ["supplier_rank", ">", 0]]
-            ], {
-                fields: ["id", "name"],
-                limit: 1
-            });
+    // Helper to find or create a customer by exact name (case-insensitive), so each customer has one record
+    async findOrCreateCustomer(name) {
+        console.log(`Searching for customer: "${name}"`);
+        const partners = await this.executeKw("res.partner", "search_read", [
+            [["name", "=ilike", name]]
+        ], {
+            fields: ["id", "name"],
+            order: "customer_rank desc, id asc",
+            limit: 1
+        });
 
-            if (partners && partners.length > 0) {
-                console.log(`Partner found (${operator}): ${partners[0].name} (ID: ${partners[0].id})`);
-                return partners[0];
-            }
+        if (partners && partners.length > 0) {
+            console.log(`Customer found: ${partners[0].name} (ID: ${partners[0].id})`);
+            return partners[0];
         }
 
-        // If not found, search an exact name without the supplier_rank constraint in case the rank is not set
-        const partnersAny = await this.executeKw("res.partner", "search_read", [
+        console.log(`Customer "${name}" not found. Creating it...`);
+        const newPartnerId = await this.executeKw("res.partner", "create", [{
+            name: name,
+            customer_rank: 1 // Mark as customer
+        }]);
+
+        console.log(`Customer "${name}" created with ID: ${newPartnerId}`);
+        return { id: newPartnerId, name: name };
+    }
+
+    // Helper to find or create a CRM/sales tag by exact name (one tag per PVC brand)
+    async findOrCreateTag(name) {
+        const tags = await this.executeKw("crm.tag", "search_read", [
             [["name", "=ilike", name]]
         ], {
             fields: ["id", "name"],
             limit: 1
         });
 
-        if (partnersAny && partnersAny.length > 0) {
-            console.log(`Partner found (any rank): ${partnersAny[0].name} (ID: ${partnersAny[0].id})`);
-            return partnersAny[0];
+        if (tags && tags.length > 0) {
+            return tags[0];
         }
 
-        // Create partner if not exists
-        console.log(`Partner "${name}" not found. Creating it...`);
-        const newPartnerId = await this.executeKw("res.partner", "create", [{
-            name: name,
-            supplier_rank: 1, // Mark as vendor
-            is_company: true
-        }]);
-
-        console.log(`Partner "${name}" created with ID: ${newPartnerId}`);
-        return { id: newPartnerId, name: name };
+        const tagId = await this.executeKw("crm.tag", "create", [{ name }]);
+        console.log(`Tag "${name}" created with ID: ${tagId}`);
+        return { id: tagId, name };
     }
 
     // Helper to search a product by name or default_code
@@ -194,53 +195,60 @@ class OdooClient {
         }
     }
 
-    // Helper to create a purchase order
-    async createPurchaseOrder(partnerId, items, orderDate, clientOrderRef, origin) {
-        console.log(`Creating Purchase Order in Odoo for partner ID: ${partnerId}...`);
+    // Helper to create a sales quotation (sale.order in draft state)
+    async createSaleOrder({ partnerId, items, orderDate, clientOrderRef, origin, opportunityId, tagIds }) {
+        console.log(`Creating Sales Quotation in Odoo for customer ID: ${partnerId}...`);
 
-        // Prepare order lines
-        const orderLines = [];
-        for (const item of items) {
-            // item should have: product_id, qty, price_unit, name (description)
-            const line = [0, 0, {
-                product_id: item.product_id,
-                name: item.name || "Producto sin descripción",
-                product_qty: parseFloat(item.qty) || 1.0,
-                price_unit: parseFloat(item.price_unit) || 0.0,
-                date_planned: new Date().toISOString().split('T')[0] // today's date
-            }];
-            orderLines.push(line);
-        }
+        // item should have: product_id, qty, price_unit, name (description)
+        const orderLines = items.map(item => [0, 0, {
+            product_id: item.product_id,
+            name: item.name || "Producto sin descripción",
+            product_uom_qty: parseFloat(item.qty) || 1.0,
+            price_unit: parseFloat(item.price_unit) || 0.0
+        }]);
 
-        const poData = {
+        const soData = {
             partner_id: partnerId,
             order_line: orderLines
         };
 
         if (orderDate) {
-            poData.date_order = orderDate; // should be 'YYYY-MM-DD HH:MM:SS' format in UTC
+            soData.date_order = orderDate; // 'YYYY-MM-DD HH:MM:SS' in UTC
         }
-
         if (clientOrderRef) {
-            poData.partner_ref = clientOrderRef; // Supplier Reference / Order Number
+            soData.client_order_ref = clientOrderRef; // Customer Reference (quote number in the document)
         }
-
         if (origin) {
-            poData.origin = origin; // Source Document (e.g. CRM opportunity name)
+            soData.origin = origin; // Source Document (e.g. CRM opportunity name)
+        }
+        if (tagIds && tagIds.length > 0) {
+            soData.tag_ids = [[6, 0, tagIds]];
         }
 
-        const poId = await this.executeKw("purchase.order", "create", [poData]);
-        console.log(`Purchase Order created with ID: ${poId}`);
-        
-        // Read the created PO to get its name (e.g. "P00001")
-        const poDetails = await this.executeKw("purchase.order", "read", [
-            [poId],
+        let soId;
+        if (opportunityId) {
+            // opportunity_id comes from the sale_crm module (installed with Sales + CRM);
+            // it shows the quotation in the opportunity's "Quotations" smart button
+            try {
+                soId = await this.executeKw("sale.order", "create", [{ ...soData, opportunity_id: opportunityId }]);
+            } catch (error) {
+                console.warn("Could not set opportunity_id (sale_crm missing?), creating without it:", error.message);
+            }
+        }
+        if (!soId) {
+            soId = await this.executeKw("sale.order", "create", [soData]);
+        }
+        console.log(`Sales Quotation created with ID: ${soId}`);
+
+        // Read the created quotation to get its name (e.g. "S00001")
+        const soDetails = await this.executeKw("sale.order", "read", [
+            [soId],
             ["name"]
         ]);
 
         return {
-            id: poId,
-            name: poDetails && poDetails.length > 0 ? poDetails[0].name : `PO #${poId}`
+            id: soId,
+            name: soDetails && soDetails.length > 0 ? soDetails[0].name : `SO #${soId}`
         };
     }
 

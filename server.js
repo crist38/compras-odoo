@@ -136,29 +136,23 @@ app.post('/api/odoo/connect', async (req, res) => {
     }
 });
 
-// Endpoint: Get partners/vendors from Odoo
-app.post('/api/odoo/partners', async (req, res) => {
+// Endpoint: Get PVC brands (CRM/sales tags) from Odoo
+app.post('/api/odoo/brands', async (req, res) => {
     try {
         const client = getOdooClient(req);
-        const search = req.body.search || '';
-        
-        // Without search: only vendors. With search: any contact (a PVC brand may exist in
-        // Odoo without being marked as vendor yet), vendors listed first.
-        const domain = search
-            ? [['name', 'ilike', search]]
-            : [['supplier_rank', '>', 0]];
+        const search = (req.body.search || '').trim();
 
-        const partners = await client.executeKw('res.partner', 'search_read', [
-            domain
+        const brands = await client.executeKw('crm.tag', 'search_read', [
+            search ? [['name', 'ilike', search]] : []
         ], {
-            fields: ['id', 'name', 'email', 'phone', 'vat', 'supplier_rank'],
-            order: 'supplier_rank desc, name asc',
+            fields: ['id', 'name'],
+            order: 'name asc',
             limit: 100
         });
 
         res.json({
             success: true,
-            partners
+            brands
         });
     } catch (error) {
         res.status(500).json({
@@ -168,7 +162,7 @@ app.post('/api/odoo/partners', async (req, res) => {
     }
 });
 
-// Endpoint: Upload and Parse purchase order
+// Endpoint: Upload and Parse a document (purchase order / quote)
 app.post('/api/upload', upload.single('file'), async (req, res) => {
     try {
         if (!req.file) {
@@ -210,6 +204,44 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     }
 });
 
+// Non-cancelled sales quotations linked to the given leads, each tagged with its leadId.
+// Linked through opportunity_id (sale_crm) or, as a fallback, the source document (origin).
+async function findLeadQuotations(client, leads) {
+    if (leads.length === 0) return [];
+    const leadIds = leads.map(l => l.id);
+    const leadNames = [...new Set(leads.map(l => l.name))];
+    const fields = ['id', 'name', 'origin', 'state', 'partner_id'];
+
+    let orders;
+    try {
+        orders = await client.executeKw('sale.order', 'search_read', [
+            [['state', '!=', 'cancel'], '|', ['opportunity_id', 'in', leadIds], ['origin', 'in', leadNames]]
+        ], { fields: [...fields, 'opportunity_id'], order: 'id desc' });
+    } catch (error) {
+        // sale_crm not installed: opportunity_id doesn't exist
+        orders = await client.executeKw('sale.order', 'search_read', [
+            [['state', '!=', 'cancel'], ['origin', 'in', leadNames]]
+        ], { fields, order: 'id desc' });
+    }
+
+    const result = [];
+    for (const so of orders) {
+        const linked = so.opportunity_id
+            ? leads.filter(l => l.id === so.opportunity_id[0])
+            : leads.filter(l => l.name === so.origin);
+        for (const lead of linked) {
+            result.push({
+                leadId: lead.id,
+                id: so.id,
+                name: so.name,
+                state: so.state,
+                partner: so.partner_id ? so.partner_id[1] : ''
+            });
+        }
+    }
+    return result;
+}
+
 // Endpoint: List won CRM opportunities (by default only those with PDF/DOCX attachments)
 app.post('/api/odoo/crm/leads', async (req, res) => {
     try {
@@ -217,7 +249,7 @@ app.post('/api/odoo/crm/leads', async (req, res) => {
         const search = (req.body.search || '').trim();
         const onlyWithAttachments = req.body.onlyWithAttachments !== false;
 
-        // Only opportunities in a "won" stage are ready to be quoted to suppliers
+        // Only opportunities in a "won" stage are ready to be quoted
         const domain = [['stage_id.is_won', '=', true]];
         if (search) {
             domain.push('|', '|', ['name', 'ilike', search], ['partner_id.name', 'ilike', search], ['partner_name', 'ilike', search]);
@@ -250,14 +282,8 @@ app.post('/api/odoo/crm/leads', async (req, res) => {
             order: 'create_date desc'
         });
 
-        // Purchase orders already generated from each lead (linked through the source document)
-        const leadNames = [...new Set(leads.map(l => l.name))];
-        const purchaseOrders = leadNames.length === 0 ? [] : await client.executeKw('purchase.order', 'search_read', [
-            [['origin', 'in', leadNames], ['state', '!=', 'cancel']]
-        ], {
-            fields: ['id', 'name', 'origin', 'state', 'partner_id'],
-            order: 'id desc'
-        });
+        // Sales quotations already generated from each lead
+        const quotations = await findLeadQuotations(client, leads);
 
         const result = leads.map(lead => ({
             id: lead.id,
@@ -271,9 +297,9 @@ app.post('/api/odoo/crm/leads', async (req, res) => {
             attachments: attachments
                 .filter(a => a.res_id === lead.id)
                 .map(a => ({ id: a.id, name: a.name, mimetype: a.mimetype, size: a.file_size })),
-            purchaseOrders: purchaseOrders
-                .filter(po => po.origin === lead.name)
-                .map(po => ({ id: po.id, name: po.name, state: po.state, partner: po.partner_id ? po.partner_id[1] : '' }))
+            quotations: quotations
+                .filter(so => so.leadId === lead.id)
+                .map(({ id, name, state, partner }) => ({ id, name, state, partner }))
         }));
 
         res.json({
@@ -433,71 +459,99 @@ app.post('/api/odoo/create-products', async (req, res) => {
     }
 });
 
-// Endpoint: Create Purchase Order in Odoo
-app.post('/api/odoo/create-purchase-order', async (req, res) => {
+// Endpoint: Create a Sales Quotation (sale.order) in Odoo
+app.post('/api/odoo/create-sale-order', async (req, res) => {
     try {
         const client = getOdooClient(req);
-        const { supplierName, items, orderDate, orderNumber, leadId, attachmentId } = req.body;
+        const { customerName, brandName, items, orderDate, orderNumber, leadId, attachmentId } = req.body;
 
-        if (!supplierName) {
-            return res.status(400).json({ success: false, message: 'Supplier name is required.' });
+        if (!brandName) {
+            return res.status(400).json({ success: false, message: 'Debe indicar la marca de PVC.' });
         }
         if (!items || !Array.isArray(items) || items.length === 0) {
-            return res.status(400).json({ success: false, message: 'Items list cannot be empty.' });
+            return res.status(400).json({ success: false, message: 'La lista de artículos no puede estar vacía.' });
         }
 
-        // 0. Only one purchase order per CRM opportunity (linked through the source document)
+        // 0. Only one quotation per CRM opportunity
         let lead = null;
         if (leadId) {
-            const leads = await client.executeKw('crm.lead', 'read', [[parseInt(leadId, 10)], ['name']]);
-            lead = leads && leads[0] ? { id: leads[0].id, name: leads[0].name } : null;
+            const leads = await client.executeKw('crm.lead', 'read', [
+                [parseInt(leadId, 10)],
+                ['name', 'partner_id', 'partner_name', 'contact_name']
+            ]);
+            lead = leads && leads[0] ? leads[0] : null;
         }
         if (lead) {
-            const existing = await client.executeKw('purchase.order', 'search_read', [
-                [['origin', '=', lead.name], ['state', '!=', 'cancel']]
-            ], { fields: ['name'], limit: 1 });
+            const existing = await findLeadQuotations(client, [lead]);
             if (existing.length > 0) {
                 return res.status(409).json({
                     success: false,
-                    message: `La oportunidad "${lead.name}" ya tiene la orden de compra ${existing[0].name}. Cancélela en Odoo si necesita generar una nueva.`
+                    message: `La oportunidad "${lead.name}" ya tiene la cotización ${existing[0].name}. Cancélela en Odoo si necesita generar una nueva.`
                 });
             }
         }
 
-        // 1. Find or create the PVC brand (vendor partner) in Odoo
-        const partner = await client.findOrCreatePartner(supplierName);
+        const warnings = [];
 
-        // 2. Prepare Odoo purchase lines
-        // Each item in req.body.items must have: product_id, qty, price_unit, description
-        const poItems = items.map(item => ({
+        // 1. Customer: the opportunity's customer if it has one; otherwise found/created by exact name
+        let customer;
+        if (lead && lead.partner_id) {
+            customer = { id: lead.partner_id[0], name: lead.partner_id[1] };
+        } else {
+            const name = (customerName || (lead && (lead.partner_name || lead.contact_name || lead.name)) || '').trim();
+            if (!name) {
+                return res.status(400).json({ success: false, message: 'Debe indicar el cliente.' });
+            }
+            customer = await client.findOrCreateCustomer(name);
+            if (lead) {
+                // Link the opportunity to its customer so it stays a single record
+                try {
+                    await client.executeKw('crm.lead', 'write', [[lead.id], { partner_id: customer.id }]);
+                } catch (error) {
+                    warnings.push(`No se pudo asignar el cliente a la oportunidad: ${error.message}`);
+                }
+            }
+        }
+
+        // 2. PVC brand as a tag (one tag per brand, shared by Sales and CRM)
+        const brandTag = await client.findOrCreateTag(brandName.trim().toUpperCase());
+
+        // 3. Create the quotation
+        // Each item in req.body.items must have: productId, qty, priceUnit, description
+        const soItems = items.map(item => ({
             product_id: item.productId,
             name: item.description,
             qty: item.qty,
             price_unit: item.priceUnit || 0.0
         }));
 
-        // 3. Create the purchase order in Odoo (from the CRM, the opportunity name is the source document)
-        const result = await client.createPurchaseOrder(
-            partner.id,
-            poItems,
-            toOdooDatetime(orderDate),
-            orderNumber || null,
-            lead ? lead.name : null
-        );
+        const result = await client.createSaleOrder({
+            partnerId: customer.id,
+            items: soItems,
+            orderDate: toOdooDatetime(orderDate),
+            clientOrderRef: orderNumber || null,
+            origin: lead ? lead.name : null,
+            opportunityId: lead ? lead.id : null,
+            tagIds: [brandTag.id]
+        });
 
-        // 4. Link the purchase order back to the CRM opportunity (non-fatal)
-        const warnings = [];
+        // 4. Link the quotation back to the CRM opportunity (non-fatal)
         if (lead) {
+            try {
+                await client.executeKw('crm.lead', 'write', [[lead.id], { tag_ids: [[4, brandTag.id]] }]);
+            } catch (error) {
+                warnings.push(`No se pudo etiquetar la oportunidad con la marca: ${error.message}`);
+            }
             if (attachmentId) {
                 try {
-                    await client.copyAttachment(parseInt(attachmentId, 10), 'purchase.order', result.id);
+                    await client.copyAttachment(parseInt(attachmentId, 10), 'sale.order', result.id);
                 } catch (error) {
-                    warnings.push(`No se pudo copiar el adjunto a la orden: ${error.message}`);
+                    warnings.push(`No se pudo copiar el adjunto a la cotización: ${error.message}`);
                 }
             }
             try {
-                await client.postNote('crm.lead', lead.id, `Cotización de compra ${result.name} creada desde Odoo Compras (marca de PVC: ${partner.name}).`);
-                await client.postNote('purchase.order', result.id, `Creada desde la oportunidad CRM: ${lead.name}`);
+                await client.postNote('crm.lead', lead.id, `Cotización ${result.name} creada desde Odoo Compras (marca de PVC: ${brandTag.name}).`);
+                await client.postNote('sale.order', result.id, `Creada desde la oportunidad CRM: ${lead.name}`);
             } catch (error) {
                 warnings.push(`No se pudo registrar la nota en el chatter: ${error.message}`);
             }
@@ -505,11 +559,12 @@ app.post('/api/odoo/create-purchase-order', async (req, res) => {
 
         res.json({
             success: true,
-            purchaseOrder: result,
-            partner,
-            lead,
+            saleOrder: result,
+            customer,
+            brand: brandTag,
+            lead: lead ? { id: lead.id, name: lead.name } : null,
             warnings,
-            message: `Purchase Order ${result.name} successfully created in Odoo.`
+            message: `Cotización ${result.name} creada en Odoo.`
         });
     } catch (error) {
         res.status(500).json({

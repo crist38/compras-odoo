@@ -1,6 +1,6 @@
 # Odoo Compras 🚀
 
-Aplicación web moderna para procesar e ingresar automáticamente órdenes de compra al sistema ERP Odoo a partir de documentos digitalizados (formatos **PDF** y **Word .docx**), permitiendo la verificación e inserción automática de productos faltantes en el inventario.
+Aplicación web moderna para procesar presupuestos y órdenes y crear automáticamente **cotizaciones de venta** en el sistema ERP Odoo a partir de documentos digitalizados (formatos **PDF** y **Word .docx**), vinculadas a las oportunidades del CRM, con verificación e inserción automática de productos faltantes en el catálogo.
 
 Construido utilizando **Node.js (Express)** en el backend y **React (Vite + Tailwind CSS v3)** en el frontend.
 
@@ -14,17 +14,18 @@ Construido utilizando **Node.js (Express)** en el backend y **React (Vite + Tail
   - Extrae de manera secuencial los metadatos (número de orden/presupuesto, fecha de documento, obra/referencia, cliente y dirección).
   - Parsea las tablas de artículos abstrayendo cantidades, unidades de medida, precios unitarios y detalles del producto.
   - Detecta automáticamente el formato del PDF (ver [Formatos de documento soportados](#-formatos-de-documento-soportados)).
-  - El precio unitario del documento se usa como precio de costo de cada línea.
+  - El precio unitario del documento se usa como **precio de venta** de cada línea (editable).
 * **Integración con CRM:**
   - Lista solo las oportunidades del CRM de Odoo en etapa **ganada** (`stage_id.is_won`), con búsqueda por nombre o cliente y filtro opcional de "solo con adjuntos PDF/DOCX".
   - Descarga y procesa el adjunto seleccionado directamente desde Odoo, sin subirlo manualmente.
-  - La cotización creada queda vinculada a la oportunidad: nombre de la oportunidad como *Documento origen*, copia del adjunto en la cotización y nota en el chatter de ambos registros.
-  - **Una sola orden por oportunidad:** las oportunidades que ya tienen una orden de compra no cancelada (con su nombre como *Documento origen*) se marcan como **"Ya procesada: P000XX"**, con enlace a la orden, y no permiten importar otra (el servidor también lo valida). Para generar una nueva, cancele la existente en Odoo.
+  - La cotización creada queda vinculada a la oportunidad: campo **Oportunidad** (`opportunity_id`, visible en el botón "Cotizaciones" del CRM), nombre de la oportunidad como *Documento origen*, copia del adjunto en la cotización y nota en el chatter de ambos registros.
+  - **Cliente:** se usa el cliente de la oportunidad; si no tiene, se toma el nombre del documento (editable), se busca en Odoo por nombre exacto o se crea una sola vez, y se asigna a la oportunidad.
+  - **Una sola cotización por oportunidad:** las oportunidades que ya tienen una cotización no cancelada se marcan como **"Ya procesada: S000XX"**, con enlace a la cotización, y no permiten crear otra (el servidor también lo valida). Para generar una nueva, cancele la existente en Odoo.
 * **Integración inteligente con Odoo:**
-  - **Marca de PVC:** El proveedor de la orden de compra es la **marca de PVC**. Se detecta del documento cuando aparece, se preselecciona si ya existe en Odoo y puede corregirse con un buscador. Si no existe, se crea una sola vez como proveedor (búsqueda por nombre exacto primero) y se reutiliza en las siguientes órdenes.
+  - **Marca de PVC (etiqueta):** La marca se registra como **etiqueta** (`crm.tag`, compartida por Ventas y CRM) en la cotización y en la oportunidad, para filtrar y agrupar por marca. Se detecta del documento cuando aparece y puede corregirse con un buscador; si no existe, se crea una sola etiqueta por marca (búsqueda por nombre exacto).
   - **Verificación de Catálogo de Inventario:** Valida de forma automática qué productos de la orden ya existen en Odoo y cuáles son nuevos.
-  - **Creación en Caliente de Productos:** Permite definir códigos/SKU internos y precios de costo para los productos que no existen y crearlos automáticamente en el catálogo de Odoo.
-  - **Registro de la Orden de Compra:** Crea la orden de compra directamente en Odoo en estado borrador (*draft*) con todos los productos y cantidades asociados, y ofrece un enlace para abrirla en Odoo.
+  - **Creación en Caliente de Productos:** Permite definir códigos/SKU internos y precios de venta para los productos que no existen y crearlos automáticamente en el catálogo de Odoo.
+  - **Cotización de Venta:** Crea la cotización (`sale.order`) en el módulo de Ventas en estado borrador, con el N° del documento como *Referencia del cliente*, y ofrece un enlace para abrirla en Odoo.
   - **Fechas:** Acepta fechas del documento en formato `DD/MM/AAAA`, `DD-MM-AAAA` o `D.M.AAAA`.
 * **Consola de Eventos:** Terminal interactiva para monitorear en tiempo real el progreso de cada acción y API.
 
@@ -43,7 +44,7 @@ Construido utilizando **Node.js (Express)** en el backend y **React (Vite + Tail
 
 Los archivos Word (`.docx`) se procesan con `docx-parser.js`.
 
-> ⚠️ Los presupuestos están dirigidos al **cliente**: su nombre se muestra solo como referencia. La **marca de PVC** detectada se usa como proveedor de la orden; si no se detecta, es obligatorio seleccionarla (con buscador) y el botón de importar permanece deshabilitado hasta entonces.
+> ⚠️ El botón **"Crear Cotización en Ventas"** se habilita cuando hay **cliente** y **marca de PVC**. Si la marca no se detecta en el documento, selecciónela o escríbala en el buscador y use «como marca nueva».
 
 Para agregar un formato nuevo, cree una función `parseQuoteFormat…(lines, text)` en `pdf-parser.js` y agregue su condición de detección en `parsePdf`.
 
@@ -52,7 +53,7 @@ Para agregar un formato nuevo, cree una función `parseQuoteFormat…(lines, tex
 ## 🛠️ Requisitos de Instalación
 
 1. Tener instalado [Node.js](https://nodejs.org/) (versión 18 o superior recomendada).
-2. Tener un servidor ERP de Odoo configurado y accesible, con los módulos **Compras** y **CRM** instalados.
+2. Tener un servidor ERP de Odoo configurado y accesible, con los módulos **Ventas** y **CRM** instalados (al tenerlos ambos, Odoo instala `sale_crm`, que vincula cotizaciones y oportunidades).
 3. En Odoo, la etapa "Ganado" del CRM debe tener marcada la opción **"¿Es la etapa ganada?"** para que sus oportunidades aparezcan en la app.
 4. El usuario de Odoo necesita permisos de lectura sobre oportunidades del CRM y sus adjuntos.
 
@@ -108,13 +109,13 @@ Con `npm run dev --prefix frontend` (Vite), el frontend apunta a `http://localho
 |---|---|---|
 | GET | `/api/health` | Estado del servidor y variables configuradas |
 | POST | `/api/odoo/connect` | Inicio de sesión en Odoo |
-| POST | `/api/odoo/partners` | Búsqueda de proveedores |
+| POST | `/api/odoo/brands` | Búsqueda de marcas de PVC (etiquetas) |
 | POST | `/api/odoo/crm/leads` | Oportunidades ganadas del CRM con sus adjuntos PDF/DOCX |
 | POST | `/api/odoo/crm/parse-attachment` | Descarga un adjunto del CRM desde Odoo y lo procesa |
 | POST | `/api/upload` | Procesa un archivo PDF/DOCX subido manualmente |
 | POST | `/api/odoo/verify-products` | Verifica qué productos existen en Odoo |
 | POST | `/api/odoo/create-products` | Crea los productos faltantes |
-| POST | `/api/odoo/create-purchase-order` | Crea la orden de compra (y la vincula a la oportunidad si viene del CRM) |
+| POST | `/api/odoo/create-sale-order` | Crea la cotización de venta (y la vincula a la oportunidad si viene del CRM) |
 
 ---
 

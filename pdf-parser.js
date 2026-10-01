@@ -89,7 +89,6 @@ function parseQuoteFormat(lines, text) {
         success: true,
         documentType: 'presupuesto',
         orderNumber,
-        supplier: brand, // the PVC brand is the purchase order partner (empty if not detected)
         brand,
         customer,
         date,
@@ -184,7 +183,6 @@ function parseQuoteFormatPositions(lines, text) {
         success: true,
         documentType: 'presupuesto',
         orderNumber,
-        supplier: brand, // the PVC brand is the purchase order partner (empty if not detected)
         brand,
         customer,
         date,
@@ -265,7 +263,6 @@ function parseQuoteFormatBullets(lines, text) {
         success: true,
         documentType: 'presupuesto',
         orderNumber,
-        supplier: brand, // the PVC brand is the purchase order partner (empty if not detected)
         brand,
         customer,
         date,
