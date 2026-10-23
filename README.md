@@ -1,107 +1,77 @@
-# Odoo Compras 🚀
+# Seguimiento de Proyectos (Odoo) 🚀
 
-Aplicación web moderna para procesar presupuestos y órdenes y crear automáticamente **cotizaciones de venta** en el sistema ERP Odoo a partir de documentos digitalizados (formatos **PDF** y **Word .docx**), vinculadas a las oportunidades del CRM, con verificación e inserción automática de productos faltantes en el catálogo.
+Aplicación web que muestra, para cada oportunidad ganada del **CRM de Odoo**, el avance del proyecto en cinco frentes: **Técnico, Financiero, Producción, Despacho e Instalación**. El estado de cada frente se **calcula automáticamente** a partir de los datos de Odoo (cotizaciones, facturas, órdenes de fabricación, entregas y tareas); no se escribe nada en Odoo.
 
 Construido utilizando **Node.js (Express)** en el backend y **React (Vite + Tailwind CSS v3)** en el frontend.
+
+> Reemplaza al antiguo cotizador (lectura de PDF/DOCX → cotización de venta), que sigue disponible en el historial de git hasta el commit `bd8901b`.
 
 ---
 
 ## 🎨 Características
 
-* **Inicio de Sesión Seguro:** Acceso utilizando directamente el correo y la contraseña de Odoo del usuario (la URL y Base de Datos del servidor Odoo se manejan de manera privada en el backend).
-* **Modo Claro / Oscuro Inteligente:** Interfaz moderna e inmersiva adaptada a las preferencias estéticas del usuario, con persistencia automática de la configuración.
-* **Procesamiento de Documentos:**
-  - Extrae de manera secuencial los metadatos (número de orden/presupuesto, fecha de documento, obra/referencia, cliente y dirección).
-  - Parsea las tablas de artículos abstrayendo cantidades, unidades de medida, precios unitarios y detalles del producto.
-  - Detecta automáticamente el formato del PDF (ver [Formatos de documento soportados](#-formatos-de-documento-soportados)).
-  - El precio unitario del documento se usa como **precio de venta** de cada línea (editable).
-* **Integración con CRM:**
-  - Lista solo las oportunidades del CRM de Odoo en etapa **ganada** (`stage_id.is_won`), con búsqueda por nombre o cliente y filtro opcional de "solo con adjuntos PDF/DOCX".
-  - Descarga y procesa el adjunto seleccionado directamente desde Odoo, sin subirlo manualmente.
-  - La cotización creada queda vinculada a la oportunidad: campo **Oportunidad** (`opportunity_id`, visible en el botón "Cotizaciones" del CRM), nombre de la oportunidad como *Documento origen*, copia del adjunto en la cotización y nota en el chatter de ambos registros.
-  - **Cliente:** se usa el cliente de la oportunidad; si no tiene, se toma el nombre del documento (editable), se busca en Odoo por nombre exacto o se crea una sola vez, y se asigna a la oportunidad.
-  - **Una sola cotización por oportunidad:** las oportunidades que ya tienen una cotización no cancelada se marcan como **"Ya procesada: S000XX"**, con enlace a la cotización, y no permiten crear otra (el servidor también lo valida). Para generar una nueva, cancele la existente en Odoo.
-* **Integración inteligente con Odoo:**
-  - **Marca de PVC (etiqueta):** La marca se registra como **etiqueta** (`crm.tag`, compartida por Ventas y CRM) en la cotización y en la oportunidad, para filtrar y agrupar por marca. Se detecta del documento cuando aparece y puede corregirse con un buscador; si no existe, se crea una sola etiqueta por marca (búsqueda por nombre exacto).
-  - **Verificación de Catálogo de Inventario:** Valida de forma automática qué productos de la orden ya existen en Odoo y cuáles son nuevos.
-  - **Creación en Caliente de Productos:** Permite definir códigos/SKU internos y precios de venta para los productos que no existen y crearlos automáticamente en el catálogo de Odoo.
-  - **Cotización de Venta:** Crea la cotización (`sale.order`) en el módulo de Ventas en estado borrador, con el N° del documento como *Referencia del cliente*, y ofrece un enlace para abrirla en Odoo.
-  - **Fechas:** Acepta fechas del documento en formato `DD/MM/AAAA`, `DD-MM-AAAA` o `D.M.AAAA`.
-* **Consola de Eventos:** Terminal interactiva para monitorear en tiempo real el progreso de cada acción y API.
+* **Inicio de sesión** con el correo y la contraseña de Odoo del usuario (URL y base de datos van en el `.env` del servidor).
+* **Modo claro / oscuro** con persistencia.
+* **Lista de oportunidades** en la etapa ganada del CRM y en las etapas posteriores (por ejemplo *En Fabricación* y *FINALIZADOS*), con búsqueda por nombre o cliente y filtro por etapa. Cada una muestra una mini barra de avance de los cinco frentes.
+* **Tablero de la oportunidad**: los cinco frentes con sus etapas, la etapa actual resaltada en color, las anteriores marcadas como cumplidas y una línea que explica de dónde sale el estado. Enlaces a la oportunidad y a sus cotizaciones en Odoo.
 
 ---
 
-## 📄 Formatos de Documento Soportados
+## 📊 Cómo se calcula cada frente
 
-`pdf-parser.js` identifica el formato por su contenido y aplica el lector correspondiente:
+Las reglas están en `tracking.js`. Las cotizaciones de una oportunidad se encuentran por el campo **Oportunidad** (`opportunity_id`), por el *Documento origen* igual al nombre de la oportunidad, o por un número de pedido escrito en el nombre (ej. `S00572 - Roberto Ramirez`).
 
-| Formato | Cómo se reconoce | Qué extrae |
+| Frente | Etapas | Regla |
 |---|---|---|
-| **Orden de compra** | Tabla con encabezado `Cant. U/M Detalle` | N° de orden, proveedor (`Señores`), fecha, obra, dirección y artículos |
-| **Presupuesto (Pos: V1)** | Bloques `Pos: V1 Medidas: …` y tabla `Importe /Uds · Unidades · TOTAL` | N° (`Número:`), fecha, referencia, cliente (`Estimado …`), artículos con precio, posición y medidas. Marca: solo si aparece `Fabricante:` (normalmente no viene) |
-| **Presupuesto (Pos. 1 - V1)** | Bloques `Pos. N - V1` cerrados por `UDS: cant  precio  total` | N° (`PRESUPUESTO 2026/30/1`), fecha, obra, cliente, artículos (descripción armada con tipo, color, medidas, perfil y vidrio). Marca: se deduce de la serie del perfil según `SERIES_BRANDS` en `pdf-parser.js` (ej. `ASPEN C60` → serie ASPEN → marca `DVP`); si la serie no está en la tabla, queda vacía para seleccionarla |
-| **Presupuesto (viñetas ⦁)** | Líneas `V1 1 748.538 CLP$ 748.538 CLP$` y encabezado `TIPO UDS VALOR NETO` | N° (`PRESUPUESTO Nº`), fecha, cliente (`OBRA:`), artículos (descripción con tipo, serie, color, medida y cristal). Marca: `⦁ Fabricante:` (ej. `SODAL`) |
+| **Técnico** | Sin medir › Medido › En revisión › Aprobado › Liberado | Medido: la oportunidad tiene adjuntos. En revisión: cotización en borrador/enviada. Aprobado: pedido confirmado. Liberado: el pedido tiene órdenes de fabricación confirmadas. |
+| **Financiero** | Anticipo pendiente › Habilitado › Pago parcial › Saldo › Pagado | Sobre las facturas de cliente publicadas (y pagos en línea) del pedido confirmado. Habilitado: pagado el anticipo (`ADVANCE_RATIO`, 50 %). Pago parcial: pagado más que el anticipo. Saldo: todo facturado y queda saldo por cobrar. Pagado: total cubierto. |
+| **Producción** | Sin liberar › Programado › Fabricación › Calidad › Terminado | Órdenes de fabricación del pedido. Programado: confirmadas sin iniciar. Fabricación: alguna en curso u operación de taller hecha. Calidad: todas terminadas, alguna "por cerrar". Terminado: todas hechas. |
+| **Despacho** | Pendiente › Programado › Parcial › Completo | Entregas de salida del pedido. Programado: entrega lista (reservada). Parcial: alguna entregada. Completo: todas entregadas. |
+| **Instalación** | No aplica › Pendiente › Programada › En ejecución › Recibida | Aplica si el pedido tiene líneas con "instalación" o tareas de proyecto. Programada: tarea con fecha. En ejecución: fecha de inicio ya alcanzada. Recibida: tareas cerradas. |
 
-Los archivos Word (`.docx`) se procesan con `docx-parser.js`.
+**Etapa del CRM como mínimo:** si la oportunidad está en una etapa tipo *En Fabricación*, Técnico queda al menos en *Liberado* y Producción en *Fabricación*; en una etapa tipo *FINALIZADOS*, todos los frentes quedan completos (Instalación solo si aplica). Esos casos se marcan con la etiqueta **"según CRM"**.
 
-> ⚠️ El botón **"Crear Cotización en Ventas"** se habilita cuando hay **cliente** y **marca de PVC**. Si la marca no se detecta en el documento, selecciónela o escríbala en el buscador y use «como marca nueva».
-
-Para agregar un formato nuevo, cree una función `parseQuoteFormat…(lines, text)` en `pdf-parser.js` y agregue su condición de detección en `parsePdf`.
+> ℹ️ Si el usuario no tiene acceso a algún módulo (Contabilidad, Fabricación, Inventario, Proyecto), el tablero se carga igual y muestra un aviso.
 
 ---
 
-## 🛠️ Requisitos de Instalación
+## 🛠️ Requisitos
 
-1. Tener instalado [Node.js](https://nodejs.org/) (versión 18 o superior recomendada).
-2. Tener un servidor ERP de Odoo configurado y accesible, con los módulos **Ventas** y **CRM** instalados (al tenerlos ambos, Odoo instala `sale_crm`, que vincula cotizaciones y oportunidades).
-3. En Odoo, la etapa "Ganado" del CRM debe tener marcada la opción **"¿Es la etapa ganada?"** para que sus oportunidades aparezcan en la app.
-4. El usuario de Odoo necesita permisos de lectura sobre oportunidades del CRM y sus adjuntos.
+1. [Node.js](https://nodejs.org/) 18 o superior.
+2. Odoo con **CRM** y **Ventas** (`sale_crm`). Para los demás frentes: **Contabilidad**, **Fabricación**, **Inventario** y **Proyecto**.
+3. En Odoo, la etapa "Ganado" del CRM debe tener marcada **"¿Es la etapa ganada?"**. Las etapas posteriores también se muestran, salvo las que parecen de pérdida ("Perdidos", "No califica").
 
 ---
 
 ## ⚙️ Configuración del Servidor
 
-En la raíz del proyecto, debes configurar un archivo `.env` o `.env.local` con las variables de conexión a tu servidor Odoo.
-
-Ejemplo de contenido para `.env.local`:
+En la raíz del proyecto, configure un archivo `.env` o `.env.local`:
 ```env
 PORT=5000
 ODOO_URL=https://tu-empresa.odoo.com
 ODOO_DB=tu-base-de-datos
 ```
 
-> 💡 **Nota:** La aplicación utiliza el protocolo JSON-RPC estándar de Odoo en el puerto HTTPS correspondiente.
-
 ---
 
 ## 🚀 Cómo Iniciar el Proyecto
 
-### 1. Descargar y compilar (Instalación Inicial)
-En la raíz del proyecto, ejecuta el siguiente comando para instalar las dependencias tanto del backend como del frontend, y compilar la aplicación React:
 ```bash
 npm run build
 ```
-
-### 2. Iniciar el Servidor de Producción
-Para iniciar el backend y servir el portal web al mismo tiempo:
 ```bash
 npm start
 ```
-La aplicación se levantará en el puerto configurado en `PORT` (por defecto: `http://localhost:5000`). El frontend compilado usa rutas relativas (`/api`), por lo que funciona con cualquier puerto.
-
-### Modo desarrollo del frontend (opcional)
-Con `npm run dev --prefix frontend` (Vite), el frontend apunta a `http://localhost:5000/api`, por lo que en ese caso el backend debe correr en el puerto `5000`.
+La aplicación se levanta en el puerto `PORT` (por defecto `http://localhost:5000`). Con `npm run dev --prefix frontend` (Vite), el frontend apunta a `http://localhost:5000/api`.
 
 ---
 
 ## 📂 Estructura del Código
 
-* `server.js`: Punto de entrada del backend de Express, encargado de servir el frontend e interactuar con la API.
-* `odoo-client.js`: Cliente JSON-RPC personalizado para la integración nativa y sin dependencias pesadas con Odoo (incluye copia de adjuntos y notas en el chatter).
-* `docx-parser.js` & `pdf-parser.js`: Algoritmos de lectura y extracción heurística de texto y tablas (ver formatos soportados).
-* `frontend/`: Aplicación frontend en React utilizando Tailwind CSS.
-  - `frontend/src/App.jsx`: Componente principal con el flujo de selección (CRM o archivo), previsualización, edición e importación a Odoo.
-  - `frontend/src/index.css`: Hoja de estilos premium con soporte para modo Claro/Oscuro dinámico.
+* `server.js`: backend Express; sirve el frontend y la API.
+* `tracking.js`: lectura de datos de Odoo y reglas de los cinco frentes.
+* `odoo-client.js`: cliente JSON-RPC mínimo para Odoo.
+* `frontend/src/App.jsx`: inicio de sesión, lista de oportunidades y tablero.
 
 ### Endpoints de la API
 
@@ -109,15 +79,9 @@ Con `npm run dev --prefix frontend` (Vite), el frontend apunta a `http://localho
 |---|---|---|
 | GET | `/api/health` | Estado del servidor y variables configuradas |
 | POST | `/api/odoo/connect` | Inicio de sesión en Odoo |
-| POST | `/api/odoo/brands` | Búsqueda de marcas de PVC (etiquetas) |
-| POST | `/api/odoo/crm/leads` | Oportunidades ganadas del CRM con sus adjuntos PDF/DOCX |
-| POST | `/api/odoo/crm/parse-attachment` | Descarga un adjunto del CRM desde Odoo y lo procesa |
-| POST | `/api/upload` | Procesa un archivo PDF/DOCX subido manualmente |
-| POST | `/api/odoo/verify-products` | Verifica qué productos existen en Odoo |
-| POST | `/api/odoo/create-products` | Crea los productos faltantes |
-| POST | `/api/odoo/create-sale-order` | Crea la cotización de venta (y la vincula a la oportunidad si viene del CRM) |
+| POST | `/api/odoo/tracking` | Oportunidades ganadas con el estado de sus cinco frentes (`search`, `stageId` opcionales) |
 
 ---
 
 ## 🔒 Licencia
-Este proyecto es software privado de uso exclusivo para automatización de compras.
+Software privado de uso exclusivo de la empresa.
