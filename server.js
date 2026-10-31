@@ -1,10 +1,10 @@
 const express = require('express');
-const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const dotenv = require('dotenv');
 const OdooClient = require('./odoo-client');
 const { buildTrackingBoard } = require('./tracking');
+const { isSessionConfigured, setSession, readSession, clearSession } = require('./session');
 
 // Load environment variables: .env first, then .env.local to override
 const envPath = path.join(__dirname, '.env');
@@ -20,14 +20,10 @@ if (fs.existsSync(envLocalPath)) {
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Enable CORS and JSON parsing
-app.use(cors());
 app.use(express.json());
 
-// Helper to get OdooClient: URL and DB from env, email/password from request
-function getOdooClient(req) {
-    const { email, password } = req.body.odooCredentials || {};
-
+// Helper to get OdooClient: URL and DB from env, email/password from the caller
+function getOdooClient({ email, password }) {
     const odooUrl = process.env.ODOO_URL;
     const odooDb = process.env.ODOO_DB;
 
@@ -55,12 +51,25 @@ app.get('/api/health', (req, res) => {
 // Endpoint: Login with Odoo credentials (email + password)
 app.post('/api/odoo/connect', async (req, res) => {
     try {
-        const client = getOdooClient(req);
+        if (!isSessionConfigured()) {
+            console.error('Falta SESSION_SECRET o tiene menos de 32 caracteres');
+            return res.status(503).json({
+                success: false,
+                message: 'El servidor no está configurado correctamente.'
+            });
+        }
+
+        const credentials = req.body?.odooCredentials || {};
+        const client = getOdooClient(credentials);
         const uid = await client.authenticate();
+
+        // The password stays encrypted in the cookie, so the browser does not resend it
+        setSession(res, { email: credentials.email, password: credentials.password });
 
         res.json({
             success: true,
             uid,
+            email: credentials.email,
             db: process.env.ODOO_DB,
             url: process.env.ODOO_URL,
             message: 'Conexión exitosa a Odoo'
@@ -73,13 +82,39 @@ app.post('/api/odoo/connect', async (req, res) => {
     }
 });
 
+// Endpoint: Current session, to restore the login when the page reloads
+app.get('/api/odoo/session', (req, res) => {
+    const session = readSession(req);
+    if (!session) {
+        return res.status(401).json({ success: false, message: 'Sesión no iniciada.' });
+    }
+
+    res.json({
+        success: true,
+        email: session.email,
+        db: process.env.ODOO_DB,
+        url: process.env.ODOO_URL
+    });
+});
+
+// Endpoint: Logout
+app.post('/api/odoo/logout', (req, res) => {
+    clearSession(res);
+    res.json({ success: true });
+});
+
 // Endpoint: Tracking board of won CRM opportunities (Técnico, Financiero, Producción, Despacho, Instalación)
 app.post('/api/odoo/tracking', async (req, res) => {
     try {
-        const client = getOdooClient(req);
+        const session = readSession(req);
+        if (!session) {
+            return res.status(401).json({ success: false, message: 'Su sesión expiró. Inicie sesión nuevamente.' });
+        }
+
+        const client = getOdooClient(session);
         const board = await buildTrackingBoard(client, {
-            search: (req.body.search || '').trim(),
-            stageId: parseInt(req.body.stageId, 10) || null
+            search: (req.body?.search || '').trim(),
+            stageId: parseInt(req.body?.stageId, 10) || null
         });
 
         res.json({

@@ -50,7 +50,11 @@ En la raíz del proyecto, configure un archivo `.env` o `.env.local`:
 PORT=5000
 ODOO_URL=https://tu-empresa.odoo.com
 ODOO_DB=tu-base-de-datos
+# Obligatoria, mínimo 32 caracteres aleatorios. Cifra la cookie de sesión; sin ella nadie puede iniciar sesión
+SESSION_SECRET=genera_una_cadena_aleatoria_larga
 ```
+
+En Vercel, defina estas variables en el proyecto. Si cambia `SESSION_SECRET`, todas las sesiones se cierran.
 
 ---
 

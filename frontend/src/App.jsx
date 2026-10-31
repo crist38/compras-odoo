@@ -15,10 +15,8 @@ import {
   Sun
 } from 'lucide-react';
 
-// In Vite dev mode the backend runs separately; in production it serves the frontend itself
-const API_BASE_URL = import.meta.env.DEV
-  ? 'http://localhost:5000/api'
-  : '/api';
+// Same origin, so the session cookie is sent. In Vite dev mode /api is proxied to the backend
+const API_BASE_URL = '/api';
 
 // Color of each tracking row (Técnico, Financiero, Producción, Despacho, Instalación)
 const TRACK_COLORS = {
@@ -116,6 +114,7 @@ export default function App() {
 
   // Login / Auth State
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [loginError, setLoginError] = useState('');
 
   // Odoo credentials (only email + password, URL/DB are in server .env.local)
@@ -136,10 +135,34 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [selectedLeadId, setSelectedLeadId] = useState(null);
 
-  const getOdooCredentialsObj = () => ({
-    email: odooEmail,
-    password: odooPass
-  });
+  const applySession = (data) => {
+    setOdooEmail(data.email || '');
+    setOdooPass('');
+    setOdooDb(data.db || '');
+    setOdooUrl(data.url || '');
+    setConnectionStatus('connected');
+    setIsLoggedIn(true);
+  };
+
+  const clearBoard = () => {
+    setIsLoggedIn(false);
+    setConnectionStatus('disconnected');
+    setLeads([]);
+    setStages([]);
+    setWarnings([]);
+    setSelectedLeadId(null);
+  };
+
+  // Restore the session when the page reloads
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/odoo/session`)
+      .then(response => (response.ok ? response.json() : null))
+      .then(data => {
+        if (data?.success) applySession(data);
+      })
+      .catch(() => {})
+      .finally(() => setCheckingSession(false));
+  }, []);
 
   const odooLink = (model, id) => `${odooUrl.replace(/\/$/, '')}/web#id=${id}&model=${model}&view_type=form`;
 
@@ -153,7 +176,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          odooCredentials: getOdooCredentialsObj()
+          odooCredentials: { email: odooEmail, password: odooPass }
         })
       });
 
@@ -168,10 +191,7 @@ export default function App() {
       }
 
       if (data.success) {
-        setOdooDb(data.db || '');
-        setOdooUrl(data.url || '');
-        setConnectionStatus('connected');
-        setIsLoggedIn(true);
+        applySession(data);
       } else {
         setConnectionStatus('error');
         setLoginError(data.message || 'Correo o contraseña incorrectos.');
@@ -190,13 +210,15 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          odooCredentials: getOdooCredentialsObj(),
           search,
           stageId: stageFilter || null
         })
       });
       const data = await readJson(response, 'Cargar seguimiento');
-      if (data.success) {
+      if (response.status === 401) {
+        clearBoard();
+        setLoginError(data.message);
+      } else if (data.success) {
         setTracks(data.tracks);
         setStages(data.stages);
         setLeads(data.leads);
@@ -222,16 +244,14 @@ export default function App() {
     }
   }, [search, stageFilter, connectionStatus]);
 
-  const handleLogout = () => {
-    setIsLoggedIn(false);
-    setConnectionStatus('disconnected');
-    setLeads([]);
-    setStages([]);
-    setWarnings([]);
-    setSelectedLeadId(null);
+  const handleLogout = async () => {
+    await fetch(`${API_BASE_URL}/odoo/logout`, { method: 'POST' }).catch(() => {});
+    clearBoard();
   };
 
   const selectedLead = leads.find(l => l.id === selectedLeadId) || null;
+
+  if (checkingSession) return null;
 
   // ─── LOGIN SCREEN ─────────────────────────────────────────────────────
   if (!isLoggedIn) {
@@ -289,7 +309,7 @@ export default function App() {
                   type="text"
                   value={odooEmail}
                   onChange={(e) => setOdooEmail(e.target.value)}
-                  placeholder="cristian3877@gmail.com"
+                  placeholder="usuario@empresa.cl"
                   className="w-full bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-2.5 text-sm text-white focus:outline-none focus:border-purple-500 transition-colors"
                   required
                 />
